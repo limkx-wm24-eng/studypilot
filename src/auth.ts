@@ -65,6 +65,7 @@ export function checkPassword(password: string, stored: string): boolean {
 }
 
 const credentials = z.object({ email: z.string().trim().toLowerCase().email().max(120), password: z.string().min(8).max(72) });
+const loginBody = credentials.extend({ rememberMe: z.boolean().default(false) });
 const registerBody = credentials.extend({ name: z.string().trim().max(40).default('') });
 const profileBody = z.object({
   name: z.string().trim().max(40), courseType: z.enum(['', 'Degree', 'Diploma', 'Foundation']), programme: z.string().trim().max(60),
@@ -108,10 +109,15 @@ export function authRoutes(app: Express, db: Database, failures: AuthFailureStor
     }
     res.status(status).json({ error: message });
   };
-  const startSession = async (res: Response, userId: string) => {
+  const startSession = async (res: Response, userId: string, rememberMe = true) => {
     const token = randomBytes(32).toString('base64url');
     await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [sha(token), userId, Date.now() + SESSION_DAYS * 864e5]);
-    res.cookie(COOKIE, token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: SESSION_DAYS * 864e5 });
+    res.cookie(COOKIE, token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      ...(rememberMe ? { maxAge: SESSION_DAYS * 864e5 } : {}),
+    });
   };
 
   app.post('/api/auth/register', async (req, res) => {
@@ -135,13 +141,13 @@ export function authRoutes(app: Express, db: Database, failures: AuthFailureStor
     const email = getAttemptEmail(req.body);
     const ip = getClientIp(req);
     if (rejectIfLimited(res, email, ip)) return;
-    const parsed = credentials.safeParse(req.body);
+    const parsed = loginBody.safeParse(req.body);
     const row = parsed.success ? await db.get('SELECT * FROM users WHERE email = ?', [parsed.data.email]) : undefined;
     if (!parsed.success || !row || !checkPassword(parsed.data.password, String(row.password_hash))) {
       return failAuthentication(res, email, ip, 401, 'Invalid email or password');
     }
     failures.clearEmail(email);
-    await startSession(res, String(row.id));
+    await startSession(res, String(row.id), parsed.data.rememberMe);
     res.json(toUser(row));
   });
 

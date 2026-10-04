@@ -31,7 +31,11 @@ test('account setup and task progress persist across login', async ({ page }) =>
   await page.getByRole('button', { name: 'Log out' }).click();
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill('e2e-password-123');
+  await page.getByLabel('Remember me').check();
   await page.getByRole('button', { name: 'Log in' }).click();
+  await expect(page.getByRole('button', { name: 'Dashboard' })).toBeVisible();
+  const sessionCookie = (await page.context().cookies()).find(({ name }) => name === 'sp_session');
+  expect(sessionCookie?.expires).toBeGreaterThan(Date.now() / 1000);
 
   await page.getByRole('button', { name: 'Tasks' }).click();
   await expect(page.getByRole('row', { name: /E2E coursework/ })).toBeVisible();

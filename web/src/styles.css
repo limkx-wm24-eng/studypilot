@@ -21,6 +21,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 input,select{font:inherit;color:var(--ink);background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:6px 8px}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:16px}
 label{display:flex;flex-direction:column;font-size:13px;color:var(--mut);gap:2px}
+.remember-me{flex-direction:row;align-items:center;gap:8px;cursor:pointer}.remember-me input{margin:0;accent-color:var(--pri)}
 .stats{display:flex;gap:28px;flex-wrap:wrap;margin:16px 0 20px}
 .stats b{display:block;font:700 30px Georgia,serif}
 .stats span,.mut{color:var(--mut);font-size:13px}

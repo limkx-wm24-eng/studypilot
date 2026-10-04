@@ -4,13 +4,17 @@ import { api, type User } from '../api';
 export default function Auth({ onUser, online }: { onUser: (u: User) => void; online: boolean }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
   const set = (key: keyof typeof form) => (e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: e.target.value });
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
-    try { onUser(await api.post<User>(`/api/auth/${mode}`, form)); }
+    try {
+      const body = login ? { email: form.email, password: form.password, rememberMe } : form;
+      onUser(await api.post<User>(`/api/auth/${mode}`, body));
+    }
     catch (err) { setError((err as Error).message); }
   };
 
@@ -26,12 +30,13 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
         <label>Password
           <input type="password" required minLength={8} value={form.password} onChange={set('password')} autoComplete={login ? 'current-password' : 'new-password'} />
         </label>
+        {login && <label className="remember-me"><input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} />Remember me</label>}
         {error && <p className="bad" role="alert">{error}</p>}
         <button className="btn">{login ? 'Log in' : 'Create account'}</button>
       </form></fieldset>
       <p className="mut">
         {login ? 'New here? ' : 'Already have an account? '}
-        <button className="link" disabled={!online} onClick={() => { setMode(login ? 'register' : 'login'); setError(''); }}>
+        <button className="link" disabled={!online} onClick={() => { setMode(login ? 'register' : 'login'); setRememberMe(false); setError(''); }}>
           {login ? 'Create an account' : 'Log in'}
         </button>
       </p>

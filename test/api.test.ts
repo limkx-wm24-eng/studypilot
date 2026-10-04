@@ -57,6 +57,20 @@ test('login checks the password and emails are unique', async () => {
   assert.equal((await send('POST', '/api/auth/register', { email: email(), password: 'short' })).status, 400);
 });
 
+test('remember me controls persistent login cookies', async () => {
+  const address = email();
+  const ip = '198.51.100.6';
+  assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);
+
+  const regularLogin = await send('POST', '/api/auth/login', { email: address, password: 'password123' }, undefined, ip);
+  assert.equal(regularLogin.status, 200);
+  assert.doesNotMatch(regularLogin.headers.getSetCookie()[0], /max-age=/i);
+
+  const rememberedLogin = await send('POST', '/api/auth/login', { email: address, password: 'password123', rememberMe: true }, undefined, ip);
+  assert.equal(rememberedLogin.status, 200);
+  assert.match(rememberedLogin.headers.getSetCookie()[0], /max-age=1209600/i);
+});
+
 test('five failed login attempts lock the email and IP with Retry-After', async () => {
   const address = email();
   const ip = '198.51.100.1';
