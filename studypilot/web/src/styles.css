@@ -42,6 +42,8 @@ input.n{width:70px}
 .note{background:var(--note);color:var(--noteInk);padding:12px 16px;border-radius:2px;margin-bottom:16px;max-width:420px}
 .note ol{margin:6px 0 0;padding-left:20px}.note .link{color:var(--noteInk)}.note .done .link{opacity:.6}
 .banner{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border-left:4px solid var(--bad);background:var(--paper);padding:8px 12px;margin:0 0 16px}
+.offline-banner{margin:0 0 16px;padding:8px 12px;background:var(--note);color:var(--noteInk);border-left:4px solid var(--noteInk)}
+.app-content{display:block;min-inline-size:0;margin:0;padding:0;border:0}.app-content:disabled{opacity:.72}.app-content:disabled button,.app-content:disabled input,.app-content:disabled select{cursor:not-allowed}
 h3{font:700 16px Georgia,"Iowan Old Style",serif;margin:22px 0 6px}
 .seg{display:inline-flex}
 .seg button{font:inherit;border:1px solid var(--line);background:var(--paper);color:var(--ink);padding:3px 10px;cursor:pointer}
@@ -74,3 +76,7 @@ h3{font:700 16px Georgia,"Iowan Old Style",serif;margin:22px 0 6px}
 .calendar-chip{width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;border-radius:3px;padding:2px 4px;text-align:left;font:12px/1.35 system-ui,"Segoe UI",sans-serif;cursor:pointer;color:var(--c);background:color-mix(in srgb,var(--c) 16%,transparent)}
 .more{border:0;background:none;color:var(--pri);padding:2px 0;font:12px system-ui,"Segoe UI",sans-serif;text-decoration:underline;cursor:pointer}
 @media(max-width:520px){main{padding:14px}.calendar-head{align-items:flex-start}.calendar-head h2{order:-1;width:100%}.calendar-day{min-height:92px;padding:3px}.calendar-weekday{font-size:10px}.calendar-chip{font-size:10px;padding:2px}.more{font-size:10px}.calendar-option{font-size:12px}.calendar-head .btn{padding:4px 6px;font-size:13px}.item{gap:7px;align-items:flex-start;flex-wrap:wrap}.item .grow{min-width:45%}.item .small{margin-left:auto}}
+@media(max-width:520px){
+  .tw{overflow:visible}.tw table{min-width:0;table-layout:fixed}.tw th:nth-child(3),.tw td:nth-child(3),.tw th:nth-child(4),.tw td:nth-child(4),.tw th:nth-child(6),.tw td:nth-child(6),.tw th:nth-child(7),.tw td:nth-child(7){display:none}.tw th,.tw td{padding:6px 4px;overflow-wrap:anywhere}.tw th:nth-child(1),.tw td:nth-child(1){width:42%}.tw th:nth-child(2),.tw td:nth-child(2){width:21%}.tw th:nth-child(5),.tw td:nth-child(5){width:22%}.tw th:nth-child(8),.tw td:nth-child(8){width:15%}
+  .seg{max-width:100%;flex-wrap:wrap}.seg button{padding:3px 6px;font-size:12px}.course-row{align-items:flex-start;flex-wrap:wrap}.course-row .grow{width:100%}.course-grade{margin-right:auto}.grade,.calculator{max-width:100%;overflow-wrap:anywhere}.stats{gap:16px}
+}

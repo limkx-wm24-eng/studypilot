@@ -7,6 +7,7 @@ A study planner for students: classes, tasks (assignments, homework, exams, proj
 - **API:** Node.js + Express 5 + TypeScript, zod request validation (`src/`)
 - **Database:** PostgreSQL via `pg` in production, SQLite through Node's built-in `node:sqlite` for local development (Node 22.13 or newer)
 - **Accounts:** email and password, scrypt password hashing, random session tokens stored hashed, httpOnly SameSite=Lax cookie
+- **Security:** Helmet security headers and in-memory auth rate limiting
 - **Quality:** automated API tests (Node test runner), Docker image, GitHub Actions CI
 
 ## Run
@@ -62,7 +63,8 @@ All `/api/classes` and `/api/tasks` routes need a logged-in session and only ret
 - These are estimates. Check them against your faculty's official rules.
 
 ## Known limits
-- No rate limiting on login, email verification or password reset yet.
+- Authentication rate limits count five failed attempts per email and IP in a rolling 15-minute window. The in-memory counters reset on server restart and are not shared between server instances.
+- No email verification or password reset yet.
 - Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
 
 ## Roadmap

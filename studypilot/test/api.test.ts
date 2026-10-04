@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
+import { deleteExpiredSessions } from '../src/auth.js';
 import { openDb } from '../src/db.js';
 import type { Database } from '../src/db.js';
 
@@ -11,7 +12,9 @@ let base = '';
 let db: Database;
 before(async () => {
   db = await openDb();
-  await new Promise<void>((done) => { server = createApp(db).listen(0, done); });
+  const app = createApp(db);
+  app.set('trust proxy', 1);
+  await new Promise<void>((done) => { server = app.listen(0, done); });
   base = `http://localhost:${(server.address() as AddressInfo).port}`;
 });
 after(async () => {
@@ -19,16 +22,16 @@ after(async () => {
   if (db) await db.close();
 });
 
-const send = (method: string, path: string, body?: unknown, cookie?: string) =>
+const send = (method: string, path: string, body?: unknown, cookie?: string, ip = '127.0.0.1') =>
   fetch(base + path, {
     method,
-    headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 let n = 0;
 const email = () => `user${++n}@example.com`;
-const signup = async () => {
-  const r = await send('POST', '/api/auth/register', { email: email(), password: 'password123', name: 'Test' });
+const signup = async (ip = '127.0.0.1') => {
+  const r = await send('POST', '/api/auth/register', { email: email(), password: 'password123', name: 'Test' }, undefined, ip);
   assert.equal(r.status, 201);
   return r.headers.getSetCookie()[0].split(';')[0];
 };
@@ -52,6 +55,56 @@ test('login checks the password and emails are unique', async () => {
   assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'wrong-password' })).status, 401);
   assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'password123' })).status, 200);
   assert.equal((await send('POST', '/api/auth/register', { email: email(), password: 'short' })).status, 400);
+});
+
+test('five failed login attempts lock the email and IP with Retry-After', async () => {
+  const address = email();
+  const ip = '198.51.100.1';
+  assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const response = await send('POST', '/api/auth/login', { email: address, password: 'wrong-password' }, undefined, ip);
+    assert.equal(response.status, attempt === 5 ? 429 : 401);
+    if (attempt === 5) assert.ok(Number(response.headers.get('Retry-After')) > 0);
+  }
+  assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'password123' }, undefined, ip)).status, 429);
+});
+
+test('a correct login succeeds after four failed attempts', async () => {
+  const address = email();
+  const ip = '198.51.100.2';
+  assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);
+  for (let attempt = 0; attempt < 4; attempt++) {
+    assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'wrong-password' }, undefined, ip)).status, 401);
+  }
+  assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'password123' }, undefined, ip)).status, 200);
+});
+
+test('registration failures are also throttled', async () => {
+  const ip = '198.51.100.3';
+  const body = { email: email(), password: 'password123' };
+  assert.equal((await send('POST', '/api/auth/register', body, undefined, ip)).status, 201);
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const response = await send('POST', '/api/auth/register', body, undefined, ip);
+    assert.equal(response.status, attempt === 5 ? 429 : 409);
+    if (attempt === 5) assert.ok(Number(response.headers.get('Retry-After')) > 0);
+  }
+});
+
+test('Helmet sets a Vite-compatible content security policy', async () => {
+  const response = await send('GET', '/api/health');
+  const policy = response.headers.get('Content-Security-Policy') ?? '';
+  assert.ok(policy.includes("script-src 'self'"));
+  assert.ok(policy.includes("style-src 'self' 'unsafe-inline'"));
+});
+
+test('expired sessions are deleted without removing active sessions', async () => {
+  const cookie = await signup('198.51.100.4');
+  const me = await json<{ id: string }>(await send('GET', '/api/auth/me', undefined, cookie));
+  await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', ['expired-test-token', me.id, Date.now() - 1]);
+  await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', ['active-test-token', me.id, Date.now() + 60_000]);
+  await deleteExpiredSessions(db);
+  assert.equal(await db.get('SELECT token_hash FROM sessions WHERE token_hash = ?', ['expired-test-token']), undefined);
+  assert.ok(await db.get('SELECT token_hash FROM sessions WHERE token_hash = ?', ['active-test-token']));
 });
 
 test('classes and tasks need a login', async () => {

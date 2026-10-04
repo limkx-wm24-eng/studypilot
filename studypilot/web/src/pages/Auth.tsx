@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { api, type User } from '../api';
 
-export default function Auth({ onUser }: { onUser: (u: User) => void }) {
+export default function Auth({ onUser, online }: { onUser: (u: User) => void; online: boolean }) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
@@ -18,8 +18,9 @@ export default function Auth({ onUser }: { onUser: (u: User) => void }) {
   return (
     <main className="auth">
       <h1>StudyPilot</h1>
+      {!online && <p className="offline-banner" role="status">You are offline. Log in and account changes need a connection.</p>}
       <p className="hint">{login ? 'Log in to see your classes and deadlines.' : 'Create an account to start planning.'}</p>
-      <form className="stack" onSubmit={submit}>
+      <fieldset className="app-content" disabled={!online}><form className="stack" onSubmit={submit}>
         {!login && <label>Name<input value={form.name} onChange={set('name')} maxLength={40} /></label>}
         <label>Email<input type="email" required value={form.email} onChange={set('email')} autoComplete="email" /></label>
         <label>Password
@@ -27,10 +28,10 @@ export default function Auth({ onUser }: { onUser: (u: User) => void }) {
         </label>
         {error && <p className="bad" role="alert">{error}</p>}
         <button className="btn">{login ? 'Log in' : 'Create account'}</button>
-      </form>
+      </form></fieldset>
       <p className="mut">
         {login ? 'New here? ' : 'Already have an account? '}
-        <button className="link" onClick={() => { setMode(login ? 'register' : 'login'); setError(''); }}>
+        <button className="link" disabled={!online} onClick={() => { setMode(login ? 'register' : 'login'); setError(''); }}>
           {login ? 'Create an account' : 'Log in'}
         </button>
       </p>

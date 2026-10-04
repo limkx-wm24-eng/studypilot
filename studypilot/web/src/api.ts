@@ -28,6 +28,7 @@ export type ClassSummary = {
 export type Summary = { requiredPercent: number | null; weeks: number; semesterStart: string; classes: ClassSummary[] };
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  if (!navigator.onLine) throw new Error(method === 'GET' ? 'You are offline. Showing saved app content only.' : 'You are offline. Changes are disabled until you reconnect.');
   const res = await fetch(url, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },

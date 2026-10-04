@@ -1,4 +1,5 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
+import helmet from 'helmet';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
@@ -32,6 +33,25 @@ const invalid = (res: Response, issues: unknown) => void res.status(400).json({ 
 export function createApp(db: Database) {
   const app = express();
   if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", 'data:'],
+        formAction: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        manifestSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        scriptSrcAttr: ["'none'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        workerSrc: ["'self'"],
+      },
+    },
+  }));
   app.use(express.json());
   const uid = (res: Response) => res.locals.userId as string;
   const getClass = (id: string, user: string) => db.get('SELECT id, name, color FROM classes WHERE id = ? AND user_id = ?', [id, user]);
@@ -131,7 +151,10 @@ export function createApp(db: Database) {
     res.status(204).end();
   });
 
-  app.use(express.static(fileURLToPath(new URL('../web/dist', import.meta.url))));
+  const webDist = fileURLToPath(new URL('../web/dist', import.meta.url));
+  app.get('/manifest.webmanifest', (_req, res) => { res.type('application/manifest+json').sendFile('manifest.webmanifest', { root: webDist }); });
+  app.get('/sw.js', (_req, res) => { res.type('application/javascript').set('Cache-Control', 'no-store, max-age=0').sendFile('sw.js', { root: webDist }); });
+  app.use(express.static(webDist));
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const badJson = typeof err === 'object' && err !== null && 'status' in err && err.status === 400;
     res.status(badJson ? 400 : 500).json({ error: badJson ? 'Invalid JSON' : 'Server error' });
