@@ -23,10 +23,11 @@ const registerBody = credentials.extend({ name: z.string().trim().max(40).defaul
 const profileBody = z.object({
   name: z.string().trim().max(40), courseType: z.enum(['', 'Degree', 'Diploma', 'Foundation']), programme: z.string().trim().max(60),
   semesterWeeks: z.union([z.literal(7), z.literal(14)]), semesterStart: z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]),
+  reminderDays: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(7)]),
 }).partial();
 const toUser = (row: DbRow) => ({
   id: row.id, email: row.email, name: row.name, courseType: row.course_type, programme: row.programme,
-  semesterWeeks: row.semester_weeks, semesterStart: row.semester_start,
+  semesterWeeks: row.semester_weeks, semesterStart: row.semester_start, reminderDays: row.reminder_days,
 });
 const readToken = (req: Request) => req.headers.cookie?.split(';').map((cookie) => cookie.trim().split('=')).find(([key]) => key === COOKIE)?.[1];
 
@@ -77,7 +78,7 @@ export function authRoutes(app: Express, db: Database) {
   app.patch('/api/auth/me', requireUser, async (req, res) => {
     const parsed = profileBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'Invalid profile details' });
-    const columns = { name: 'name', courseType: 'course_type', programme: 'programme', semesterWeeks: 'semester_weeks', semesterStart: 'semester_start' } as const;
+    const columns = { name: 'name', courseType: 'course_type', programme: 'programme', semesterWeeks: 'semester_weeks', semesterStart: 'semester_start', reminderDays: 'reminder_days' } as const;
     const keys = (Object.keys(parsed.data) as (keyof typeof columns)[]).filter((key) => key in columns);
     if (keys.length) await db.run(`UPDATE users SET ${keys.map((key) => `${columns[key]} = ?`).join(', ')} WHERE id = ?`, [...keys.map((key) => parsed.data[key] as DbValue), res.locals.userId]);
     res.json(await getUser(res.locals.userId));

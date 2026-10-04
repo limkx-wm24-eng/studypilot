@@ -15,12 +15,18 @@ const taskBody = z.object({
   classId: z.string().min(1).max(64), type: z.enum(TYPES), name: z.string().trim().min(1).max(60),
   priority: z.enum(PRIORITIES), status: z.enum(STATUSES), due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.number().min(0).max(100).nullable(),
 });
+const GRADES = ['A', 'A−', 'B+', 'B', 'B−', 'C+', 'C'] as const;
+const courseBody = z.object({
+  semesterLabel: z.string().trim().min(1).max(40), courseName: z.string().trim().min(1).max(80),
+  creditHours: z.number().positive().max(12), grade: z.enum(GRADES).nullable(),
+});
 const CLASS_COLS = { name: 'name', color: 'color' };
 const TASK_COLS = { classId: 'class_id', type: 'type', name: 'name', priority: 'priority', status: 'status', due: 'due', grade: 'grade' };
 const TASK_SQL = 'SELECT t.* FROM tasks t JOIN classes c ON c.id = t.class_id WHERE c.user_id = ?';
 const toTask = (r: DbRow) => ({
   id: r.id, classId: r.class_id, type: r.type, name: r.name, priority: r.priority, status: r.status, due: r.due, grade: r.grade,
 });
+const toCourse = (r: DbRow) => ({ id: r.id, semesterLabel: r.semester_label, courseName: r.course_name, creditHours: Number(r.credit_hours), grade: r.grade });
 const invalid = (res: Response, issues: unknown) => void res.status(400).json({ error: 'Invalid input', errors: issues });
 
 export function createApp(db: Database) {
@@ -44,6 +50,7 @@ export function createApp(db: Database) {
   const auth = makeRequireUser(db);
   app.use('/api/classes', auth);
   app.use('/api/tasks', auth);
+  app.use('/api/courses', auth);
   timetableRoutes(app, db, auth);
 
   app.get('/api/classes', async (_req, res) => {
@@ -96,6 +103,31 @@ export function createApp(db: Database) {
   app.delete('/api/tasks/:id', async (req, res) => {
     const result = await db.run('DELETE FROM tasks WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE user_id = ?)', [req.params.id, uid(res)]);
     if (!result.changes) return void res.status(404).json({ error: 'Task not found' });
+    res.status(204).end();
+  });
+
+  app.get('/api/courses', async (_req, res) => {
+    res.json((await db.all('SELECT * FROM courses WHERE user_id = ? ORDER BY semester_label, course_name, id', [uid(res)])).map(toCourse));
+  });
+  app.post('/api/courses', async (req, res) => {
+    const parsed = courseBody.safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
+    const id = randomUUID();
+    await db.run('INSERT INTO courses (id, user_id, semester_label, course_name, credit_hours, grade) VALUES (?, ?, ?, ?, ?, ?)', [id, uid(res), parsed.data.semesterLabel, parsed.data.courseName, parsed.data.creditHours, parsed.data.grade]);
+    res.status(201).json(toCourse((await db.get('SELECT * FROM courses WHERE id = ? AND user_id = ?', [id, uid(res)]))!));
+  });
+  app.patch('/api/courses/:id', async (req, res) => {
+    const parsed = courseBody.partial().safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
+    const existing = await db.get('SELECT * FROM courses WHERE id = ? AND user_id = ?', [req.params.id, uid(res)]);
+    if (!existing) return void res.status(404).json({ error: 'Course not found' });
+    const columns = { semesterLabel: 'semester_label', courseName: 'course_name', creditHours: 'credit_hours', grade: 'grade' };
+    await update('courses', columns, req.params.id, parsed.data);
+    res.json(toCourse((await db.get('SELECT * FROM courses WHERE id = ? AND user_id = ?', [req.params.id, uid(res)]))!));
+  });
+  app.delete('/api/courses/:id', async (req, res) => {
+    const result = await db.run('DELETE FROM courses WHERE id = ? AND user_id = ?', [req.params.id, uid(res)]);
+    if (!result.changes) return void res.status(404).json({ error: 'Course not found' });
     res.status(204).end();
   });
 

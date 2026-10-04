@@ -38,8 +38,9 @@ const taskFor = (classId: string) => ({ classId, type: 'Homework', name: 'Tutori
 
 test('register, read profile, log out', async () => {
   const cookie = await signup();
-  const me = await json<{ name: string }>(await send('GET', '/api/auth/me', undefined, cookie));
+  const me = await json<{ name: string; reminderDays: number }>(await send('GET', '/api/auth/me', undefined, cookie));
   assert.equal(me.name, 'Test');
+  assert.equal(me.reminderDays, 1);
   assert.equal((await send('POST', '/api/auth/logout', undefined, cookie)).status, 204);
   assert.equal((await send('GET', '/api/auth/me', undefined, cookie)).status, 401);
 });
@@ -79,13 +80,27 @@ test('users cannot see or change each other\'s data', async () => {
   assert.equal((await send('POST', '/api/tasks', taskFor(c.id), bob)).status, 422);
 });
 
+test('course CRUD is validated and private to its owner', async () => {
+  const [alice, bob] = [await signup(), await signup()];
+  const body = { semesterLabel: 'Year 1 Semester 1', courseName: 'Calculus', creditHours: 3, grade: 'A−' };
+  const course = await json<{ id: string; grade: string }>(await send('POST', '/api/courses', body, alice));
+  assert.equal(course.grade, 'A−');
+  assert.equal((await json<unknown[]>(await send('GET', '/api/courses', undefined, bob))).length, 0);
+  assert.equal((await send('PATCH', `/api/courses/${course.id}`, { grade: 'D' }, alice)).status, 400);
+  assert.equal((await send('PATCH', `/api/courses/${course.id}`, { grade: 'B+' }, bob)).status, 404);
+  assert.equal((await send('DELETE', `/api/courses/${course.id}`, undefined, bob)).status, 404);
+  assert.equal((await send('PATCH', `/api/courses/${course.id}`, { grade: 'B+' }, alice)).status, 200);
+  assert.equal((await send('DELETE', `/api/courses/${course.id}`, undefined, alice)).status, 204);
+});
+
 test('profile can be updated and the account deleted', async () => {
   const address = email();
   const r = await send('POST', '/api/auth/register', { email: address, password: 'password123' });
   const cookie = r.headers.getSetCookie()[0].split(';')[0];
-  const me = await json<{ courseType: string; programme: string }>(await send('PATCH', '/api/auth/me', { courseType: 'Degree', programme: 'Software Engineering' }, cookie));
-  assert.deepEqual([me.courseType, me.programme], ['Degree', 'Software Engineering']);
+  const me = await json<{ courseType: string; programme: string; reminderDays: number }>(await send('PATCH', '/api/auth/me', { courseType: 'Degree', programme: 'Software Engineering', reminderDays: 3 }, cookie));
+  assert.deepEqual([me.courseType, me.programme, me.reminderDays], ['Degree', 'Software Engineering', 3]);
   assert.equal((await send('PATCH', '/api/auth/me', { courseType: 'PhD' }, cookie)).status, 400);
+  assert.equal((await send('PATCH', '/api/auth/me', { reminderDays: 4 }, cookie)).status, 400);
   assert.equal((await send('DELETE', '/api/auth/me', undefined, cookie)).status, 204);
   assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'password123' })).status, 401);
 });
