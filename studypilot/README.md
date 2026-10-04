@@ -5,7 +5,7 @@ A study planner for students: classes, tasks (assignments, homework, exams, proj
 ## Stack
 - **Frontend:** React 19 + TypeScript + Vite (`web/`)
 - **API:** Node.js + Express 5 + TypeScript, zod request validation (`src/`)
-- **Database:** SQLite through Node's built-in `node:sqlite` (Node 22.13 or newer)
+- **Database:** PostgreSQL via `pg` in production, SQLite through Node's built-in `node:sqlite` for local development (Node 22.13 or newer)
 - **Accounts:** email and password, scrypt password hashing, random session tokens stored hashed, httpOnly SameSite=Lax cookie
 - **Quality:** automated API tests (Node test runner), Docker image, GitHub Actions CI
 
@@ -18,7 +18,23 @@ npm test
 npm run build:all && npm start     # production build served by the API on :3000
 docker build -t studypilot . && docker run -p 3000:3000 -v studypilot-data:/data studypilot
 ```
-If you ran an earlier version, delete the old `studypilot.db`: the schema now has users.
+Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to use SQLite. For a local PostgreSQL instance, run `docker compose up -d postgres`, then use `DATABASE_URL=postgresql://studypilot:studypilot@localhost:5432/studypilot` before starting the API. Migrations run automatically at startup.
+
+Existing SQLite databases are migrated automatically on startup.
+
+## Deploy
+
+This project includes a [Render Blueprint](../render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
+
+1. Push this repository to GitHub. The Blueprint is at the repository root and builds the app from `studypilot/`.
+2. Create a Neon Free project, then copy its PostgreSQL connection string from the **Connect** panel. Use the connection string with `sslmode=require`.
+3. In Render, select **New > Blueprint**, connect the GitHub repository, and select the branch containing `render.yaml`.
+4. Set the prompted `DATABASE_URL` value to the Neon connection string. Render supplies `NODE_ENV=production` and `PORT=10000` from the Blueprint.
+5. Create the Blueprint and wait for Render to report a passing `/api/health` check. Open the generated `https://<service>.onrender.com` URL and register an account. Database migrations run automatically on first startup.
+
+For local environment-variable names, copy `.env.example` to a private `.env` file or set the variables in PowerShell. The app does not read `.env` automatically; use your shell or a host dashboard to provide values.
+
+Free-tier notes verified in October 2026: Render Free web services spin down after 15 minutes without traffic, receive 750 free instance-hours per workspace each month, and can restart at any time. [Render's free-service limits](https://render.com/docs/free) apply. Neon's Free plan currently provides 1 GB storage and 100 CU-hours of compute per project each month; see [Neon's current Free plan announcement](https://neon.com/blog/neon-free-plan-1-gb-per-project). These limits make this suitable for a portfolio demo, not a production service.
 
 ## API
 All `/api/classes` and `/api/tasks` routes need a logged-in session and only return the caller's own data.
@@ -47,7 +63,7 @@ All `/api/classes` and `/api/tasks` routes need a logged-in session and only ret
 
 ## Known limits
 - No rate limiting on login, email verification or password reset yet.
-- SQLite needs a disk that survives restarts; many free hosts do not provide one, so move to hosted PostgreSQL before deploying.
+- Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
 
 ## Roadmap
 - [x] Accounts and per-user data
@@ -55,5 +71,5 @@ All `/api/classes` and `/api/tasks` routes need a logged-in session and only ret
 - [x] Class timetable
 - [x] Attendance log (uses the course type from the profile)
 - [ ] Calendar view, deadline notifications, .ics export
-- [ ] PostgreSQL and a free hosted deployment
+- [x] PostgreSQL and a free hosted deployment
 - [ ] Browser tests with Playwright

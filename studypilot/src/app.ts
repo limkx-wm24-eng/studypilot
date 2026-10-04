@@ -1,57 +1,42 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import { z } from 'zod';
 import { authRoutes, makeRequireUser } from './auth.js';
+import { type Database, type DbRow, type DbValue } from './db.js';
 import { timetableRoutes } from './timetable.js';
 
 const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
 const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'] as const;
 const STATUSES = ['Not started', 'In progress', 'Complete'] as const;
 
-const classBody = z.object({
-  name: z.string().trim().min(1).max(40),
-  color: z.string().regex(/^#[0-9a-f]{6}$/i),
-});
+const classBody = z.object({ name: z.string().trim().min(1).max(40), color: z.string().regex(/^#[0-9a-f]{6}$/i) });
 const taskBody = z.object({
-  classId: z.string().min(1).max(64),
-  type: z.enum(TYPES),
-  name: z.string().trim().min(1).max(60),
-  priority: z.enum(PRIORITIES),
-  status: z.enum(STATUSES),
-  due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  grade: z.number().min(0).max(100).nullable(),
+  classId: z.string().min(1).max(64), type: z.enum(TYPES), name: z.string().trim().min(1).max(60),
+  priority: z.enum(PRIORITIES), status: z.enum(STATUSES), due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.number().min(0).max(100).nullable(),
 });
-
 const CLASS_COLS = { name: 'name', color: 'color' };
 const TASK_COLS = { classId: 'class_id', type: 'type', name: 'name', priority: 'priority', status: 'status', due: 'due', grade: 'grade' };
 const TASK_SQL = 'SELECT t.* FROM tasks t JOIN classes c ON c.id = t.class_id WHERE c.user_id = ?';
-
-const toTask = (r: Record<string, any>) => ({
-  id: r.id, classId: r.class_id, type: r.type, name: r.name,
-  priority: r.priority, status: r.status, due: r.due, grade: r.grade,
+const toTask = (r: DbRow) => ({
+  id: r.id, classId: r.class_id, type: r.type, name: r.name, priority: r.priority, status: r.status, due: r.due, grade: r.grade,
 });
 const invalid = (res: Response, issues: unknown) => void res.status(400).json({ error: 'Invalid input', errors: issues });
 
-export function createApp(db: DatabaseSync) {
+export function createApp(db: Database) {
   const app = express();
   if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
   app.use(express.json());
-
   const uid = (res: Response) => res.locals.userId as string;
-  const getClass = (id: string, user: string) =>
-    db.prepare('SELECT id, name, color FROM classes WHERE id = ? AND user_id = ?').get(id, user);
-  const getTask = (id: string, user: string) => {
-    const r = db.prepare(`${TASK_SQL} AND t.id = ?`).get(user, id);
-    return r ? toTask(r) : undefined;
+  const getClass = (id: string, user: string) => db.get('SELECT id, name, color FROM classes WHERE id = ? AND user_id = ?', [id, user]);
+  const getTask = async (id: string, user: string) => {
+    const row = await db.get(`${TASK_SQL} AND t.id = ?`, [user, id]);
+    return row ? toTask(row) : undefined;
   };
-  // Table and column names come from the constants above, never from user input.
-  const update = (table: string, cols: Record<string, string>, rowId: string, data: Record<string, unknown>) => {
-    const keys = Object.keys(data).filter((k) => k in cols);
+  const update = async (table: string, cols: Record<string, string>, rowId: string, data: Record<string, unknown>) => {
+    const keys = Object.keys(data).filter((key) => key in cols);
     if (!keys.length) return;
-    db.prepare(`UPDATE ${table} SET ${keys.map((k) => `${cols[k]} = ?`).join(', ')} WHERE id = ?`)
-      .run(...keys.map((k) => data[k] as SQLInputValue), rowId);
+    await db.run(`UPDATE ${table} SET ${keys.map((key) => `${cols[key]} = ?`).join(', ')} WHERE id = ?`, [...keys.map((key) => data[key] as DbValue), rowId]);
   };
 
   app.get('/api/health', (_req, res) => { res.json({ ok: true }); });
@@ -61,66 +46,62 @@ export function createApp(db: DatabaseSync) {
   app.use('/api/tasks', auth);
   timetableRoutes(app, db, auth);
 
-  // ---- Classes ----
-  app.get('/api/classes', (_req, res) => {
-    res.json(db.prepare('SELECT id, name, color FROM classes WHERE user_id = ? ORDER BY rowid').all(uid(res)));
+  app.get('/api/classes', async (_req, res) => {
+    res.json(await db.all('SELECT id, name, color FROM classes WHERE user_id = ? ORDER BY created_at, id', [uid(res)]));
   });
-  app.post('/api/classes', (req, res) => {
-    const p = classBody.safeParse(req.body);
-    if (!p.success) return invalid(res, p.error.issues);
+  app.post('/api/classes', async (req, res) => {
+    const parsed = classBody.safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
     const id = randomUUID();
-    db.prepare('INSERT INTO classes (id, user_id, name, color) VALUES (?, ?, ?, ?)').run(id, uid(res), p.data.name, p.data.color);
-    res.status(201).json(getClass(id, uid(res)));
+    await db.run('INSERT INTO classes (id, user_id, name, color, created_at) VALUES (?, ?, ?, ?, ?)', [id, uid(res), parsed.data.name, parsed.data.color, Date.now()]);
+    res.status(201).json(await getClass(id, uid(res)));
   });
-  app.patch('/api/classes/:id', (req, res) => {
-    const p = classBody.partial().safeParse(req.body);
-    if (!p.success) return invalid(res, p.error.issues);
-    if (!getClass(req.params.id, uid(res))) return void res.status(404).json({ error: 'Class not found' });
-    update('classes', CLASS_COLS, req.params.id, p.data);
-    res.json(getClass(req.params.id, uid(res)));
+  app.patch('/api/classes/:id', async (req, res) => {
+    const parsed = classBody.partial().safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
+    if (!await getClass(req.params.id, uid(res))) return void res.status(404).json({ error: 'Class not found' });
+    await update('classes', CLASS_COLS, req.params.id, parsed.data);
+    res.json(await getClass(req.params.id, uid(res)));
   });
-  app.delete('/api/classes/:id', (req, res) => {
-    const r = db.prepare('DELETE FROM classes WHERE id = ? AND user_id = ?').run(req.params.id, uid(res));
-    if (!r.changes) return void res.status(404).json({ error: 'Class not found' });
+  app.delete('/api/classes/:id', async (req, res) => {
+    const result = await db.run('DELETE FROM classes WHERE id = ? AND user_id = ?', [req.params.id, uid(res)]);
+    if (!result.changes) return void res.status(404).json({ error: 'Class not found' });
     res.status(204).end();
   });
 
-  // ---- Tasks ----
-  app.get('/api/tasks', (req, res) => {
+  app.get('/api/tasks', async (req, res) => {
     const classId = typeof req.query.classId === 'string' ? req.query.classId : null;
     const rows = classId
-      ? db.prepare(`${TASK_SQL} AND t.class_id = ? ORDER BY t.due, t.rowid`).all(uid(res), classId)
-      : db.prepare(`${TASK_SQL} ORDER BY t.due, t.rowid`).all(uid(res));
+      ? await db.all(`${TASK_SQL} AND t.class_id = ? ORDER BY t.due, t.created_at, t.id`, [uid(res), classId])
+      : await db.all(`${TASK_SQL} ORDER BY t.due, t.created_at, t.id`, [uid(res)]);
     res.json(rows.map(toTask));
   });
-  app.post('/api/tasks', (req, res) => {
-    const p = taskBody.safeParse(req.body);
-    if (!p.success) return invalid(res, p.error.issues);
-    if (!getClass(p.data.classId, uid(res))) return void res.status(422).json({ error: 'Unknown classId' });
+  app.post('/api/tasks', async (req, res) => {
+    const parsed = taskBody.safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
+    if (!await getClass(parsed.data.classId, uid(res))) return void res.status(422).json({ error: 'Unknown classId' });
     const id = randomUUID();
-    const t = p.data;
-    db.prepare('INSERT INTO tasks (id, class_id, type, name, priority, status, due, grade) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(id, t.classId, t.type, t.name, t.priority, t.status, t.due, t.grade);
-    res.status(201).json(getTask(id, uid(res)));
+    const task = parsed.data;
+    await db.run('INSERT INTO tasks (id, class_id, type, name, priority, status, due, grade, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [id, task.classId, task.type, task.name, task.priority, task.status, task.due, task.grade, Date.now()]);
+    res.status(201).json(await getTask(id, uid(res)));
   });
-  app.patch('/api/tasks/:id', (req, res) => {
-    const p = taskBody.partial().safeParse(req.body);
-    if (!p.success) return invalid(res, p.error.issues);
-    if (!getTask(req.params.id, uid(res))) return void res.status(404).json({ error: 'Task not found' });
-    if (p.data.classId && !getClass(p.data.classId, uid(res))) return void res.status(422).json({ error: 'Unknown classId' });
-    update('tasks', TASK_COLS, req.params.id, p.data);
-    res.json(getTask(req.params.id, uid(res)));
+  app.patch('/api/tasks/:id', async (req, res) => {
+    const parsed = taskBody.partial().safeParse(req.body);
+    if (!parsed.success) return invalid(res, parsed.error.issues);
+    if (!await getTask(req.params.id, uid(res))) return void res.status(404).json({ error: 'Task not found' });
+    if (parsed.data.classId && !await getClass(parsed.data.classId, uid(res))) return void res.status(422).json({ error: 'Unknown classId' });
+    await update('tasks', TASK_COLS, req.params.id, parsed.data);
+    res.json(await getTask(req.params.id, uid(res)));
   });
-  app.delete('/api/tasks/:id', (req, res) => {
-    const r = db.prepare('DELETE FROM tasks WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE user_id = ?)')
-      .run(req.params.id, uid(res));
-    if (!r.changes) return void res.status(404).json({ error: 'Task not found' });
+  app.delete('/api/tasks/:id', async (req, res) => {
+    const result = await db.run('DELETE FROM tasks WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE user_id = ?)', [req.params.id, uid(res)]);
+    if (!result.changes) return void res.status(404).json({ error: 'Task not found' });
     res.status(204).end();
   });
 
   app.use(express.static(fileURLToPath(new URL('../web/dist', import.meta.url))));
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const badJson = err?.status === 400;
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const badJson = typeof err === 'object' && err !== null && 'status' in err && err.status === 400;
     res.status(badJson ? 400 : 500).json({ error: badJson ? 'Invalid JSON' : 'Server error' });
   });
   return app;

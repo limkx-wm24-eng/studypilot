@@ -1,0 +1,49 @@
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  email TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL DEFAULT '',
+  course_type TEXT NOT NULL DEFAULT '',
+  programme TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at BIGINT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS classes (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  name TEXT NOT NULL,
+  priority TEXT NOT NULL,
+  status TEXT NOT NULL,
+  due TEXT NOT NULL,
+  grade REAL
+);
+
+CREATE TABLE IF NOT EXISTS slots (
+  id TEXT PRIMARY KEY,
+  class_id TEXT NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  weekday INTEGER NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  room TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS attendance (
+  slot_id TEXT NOT NULL REFERENCES slots(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  status TEXT NOT NULL,
+  PRIMARY KEY (slot_id, date)
+);

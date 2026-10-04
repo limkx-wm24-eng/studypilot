@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN semester_start TEXT NOT NULL DEFAULT '';

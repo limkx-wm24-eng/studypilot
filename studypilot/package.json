@@ -17,11 +17,13 @@
   },
   "dependencies": {
     "express": "^5.2.1",
+    "pg": "^8.23.1",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.4",
+    "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }

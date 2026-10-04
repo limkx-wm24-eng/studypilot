@@ -4,14 +4,20 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
 import { openDb } from '../src/db.js';
+import type { Database } from '../src/db.js';
 
 let server: Server;
 let base = '';
+let db: Database;
 before(async () => {
-  await new Promise<void>((done) => { server = createApp(openDb()).listen(0, done); });
+  db = await openDb();
+  await new Promise<void>((done) => { server = createApp(db).listen(0, done); });
   base = `http://localhost:${(server.address() as AddressInfo).port}`;
 });
-after(() => { server.close(); });
+after(async () => {
+  if (server) await new Promise<void>((done) => server.close(() => done()));
+  if (db) await db.close();
+});
 
 const send = (method: string, path: string, body?: unknown, cookie?: string) =>
   fetch(base + path, {
