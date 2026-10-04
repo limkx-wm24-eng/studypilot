@@ -7,3 +7,7 @@ playwright-report/
 .env
 .env.*
 !.env.example
+.edge-lighthouse/
+lighthouse-report*.json
+playwright-report/
+test-results/
