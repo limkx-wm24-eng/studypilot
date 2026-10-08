@@ -1,3 +1,5 @@
+**Live demo:** https://studypilot-zsnh.onrender.com (free hosting: the first load after a quiet period can take up to a minute. Please don't enter real personal information.)
+
 # StudyPilot
 
 A study planner for students: classes, tasks (assignments, homework, exams, projects), deadlines, a task calendar, deadline reminders, grade and target tracking with a CGPA calculator, a weekly class timetable and an attendance log. Built with TypeScript on both sides.
@@ -69,6 +71,7 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 |---|---|---|
 | POST | `/api/auth/register`, `/api/auth/login`, `/api/auth/logout` | Create an account, log in, log out |
 | GET, PATCH, DELETE | `/api/auth/me` | Read or update the profile, or delete the account and all its data |
+| PATCH | `/api/auth/email` | Change the account email after password confirmation |
 | GET, POST | `/api/classes` | List or create classes |
 | PATCH, DELETE | `/api/classes/:id` | Update or delete a class (deletes its tasks) |
 | GET, POST | `/api/tasks` | List (`?classId=`) or create tasks |

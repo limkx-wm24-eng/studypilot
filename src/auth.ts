@@ -67,6 +67,7 @@ export function checkPassword(password: string, stored: string): boolean {
 const credentials = z.object({ email: z.string().trim().toLowerCase().email().max(120), password: z.string().min(8).max(72) });
 const loginBody = credentials.extend({ rememberMe: z.boolean().default(false) });
 const registerBody = credentials.extend({ name: z.string().trim().max(40).default('') });
+const emailChangeBody = z.object({ newEmail: credentials.shape.email, password: z.string().max(72) });
 const profileBody = z.object({
   name: z.string().trim().max(40), courseType: z.enum(['', 'Degree', 'Diploma', 'Foundation']), programme: z.string().trim().max(60),
   semesterWeeks: z.union([z.literal(7), z.literal(14)]), semesterStart: z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]),
@@ -83,6 +84,10 @@ const getAttemptEmail = (body: unknown): string | undefined => {
   return email && email.length <= 120 ? email : undefined;
 };
 const getClientIp = (req: Request) => req.ip || req.socket.remoteAddress || 'unknown';
+const isUniqueConstraintViolation = (error: unknown) => {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return error.code === '23505' || error.code === 'ERR_SQLITE_CONSTRAINT_UNIQUE' || error.code === 'SQLITE_CONSTRAINT_UNIQUE';
+};
 
 export const makeRequireUser = (db: Database) => async (req: Request, res: Response, next: NextFunction) => {
   const token = readToken(req);
@@ -95,6 +100,12 @@ export const makeRequireUser = (db: Database) => async (req: Request, res: Respo
 export function authRoutes(app: Express, db: Database, failures: AuthFailureStore = new InMemoryAuthFailureStore()) {
   const requireUser = makeRequireUser(db);
   const getUser = async (id: string) => toUser((await db.get('SELECT * FROM users WHERE id = ?', [id]))!);
+  const emailExists = async (email: string, excludingUserId?: string) => Boolean(await db.get(
+    excludingUserId
+      ? 'SELECT id FROM users WHERE LOWER(email) = LOWER(?) AND id != ?'
+      : 'SELECT id FROM users WHERE LOWER(email) = LOWER(?)',
+    excludingUserId ? [email, excludingUserId] : [email],
+  ));
   const rejectIfLimited = (res: Response, email: string | undefined, ip: string) => {
     const retryAfter = failures.retryAfter(email, ip, Date.now());
     if (retryAfter === undefined) return false;
@@ -126,6 +137,7 @@ export function authRoutes(app: Express, db: Database, failures: AuthFailureStor
     if (rejectIfLimited(res, email, ip)) return;
     const parsed = registerBody.safeParse(req.body);
     if (!parsed.success) return failAuthentication(res, email, ip, 400, 'Enter a valid email and a password of 8 to 72 characters');
+    if (await emailExists(parsed.data.email)) return failAuthentication(res, email, ip, 409, 'That email is already registered');
     const id = randomUUID();
     try {
       await db.run('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)', [id, parsed.data.email, parsed.data.name, hashPassword(parsed.data.password)]);
@@ -157,6 +169,35 @@ export function authRoutes(app: Express, db: Database, failures: AuthFailureStor
     res.clearCookie(COOKIE).status(204).end();
   });
   app.get('/api/auth/me', requireUser, async (_req, res) => { res.json(await getUser(res.locals.userId)); });
+  app.patch('/api/auth/email', requireUser, async (req, res) => {
+    const parsed = emailChangeBody.safeParse(req.body);
+    if (!parsed.success) return void res.status(400).json({ error: 'Enter a valid email and password' });
+
+    const userId = String(res.locals.userId);
+    const user = await db.get('SELECT email, password_hash FROM users WHERE id = ?', [userId]);
+    if (!user) return void res.status(401).json({ error: 'Please log in' });
+    const currentEmail = String(user.email).trim().toLowerCase();
+    const ip = getClientIp(req);
+    if (rejectIfLimited(res, currentEmail, ip)) return;
+    if (!checkPassword(parsed.data.password, String(user.password_hash))) {
+      failures.recordFailure(currentEmail, ip, Date.now());
+      return void res.status(401).json({ error: 'Incorrect password' });
+    }
+    failures.clearEmail(currentEmail);
+    if (parsed.data.newEmail === currentEmail) return void res.status(400).json({ error: 'That is already your email' });
+    if (await emailExists(parsed.data.newEmail, userId)) return void res.status(409).json({ error: 'That email is already registered' });
+
+    try {
+      await db.run('UPDATE users SET email = ? WHERE id = ?', [parsed.data.newEmail, userId]);
+    } catch (error) {
+      if (isUniqueConstraintViolation(error)) return void res.status(409).json({ error: 'That email is already registered' });
+      throw error;
+    }
+    const token = readToken(req);
+    if (!token) return void res.status(401).json({ error: 'Please log in' });
+    await db.run('DELETE FROM sessions WHERE user_id = ? AND token_hash != ?', [userId, sha(token)]);
+    res.json(await getUser(userId));
+  });
   app.patch('/api/auth/me', requireUser, async (req, res) => {
     const parsed = profileBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'Invalid profile details' });

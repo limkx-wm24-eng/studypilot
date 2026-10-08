@@ -57,6 +57,45 @@ test('login checks the password and emails are unique', async () => {
   assert.equal((await send('POST', '/api/auth/register', { email: email(), password: 'short' })).status, 400);
 });
 
+test('users can change their email after confirming their password', async () => {
+  const ip = '198.51.100.40';
+  const oldEmail = email();
+  const duplicateEmail = email();
+  const registered = await send('POST', '/api/auth/register', { email: oldEmail, password: 'password123' }, undefined, ip);
+  assert.equal(registered.status, 201);
+  const currentCookie = registered.headers.getSetCookie()[0].split(';')[0];
+
+  const duplicateRegistration = await send('POST', '/api/auth/register', { email: duplicateEmail, password: 'password123' }, undefined, '198.51.100.41');
+  assert.equal(duplicateRegistration.status, 201);
+  await db.run('UPDATE users SET email = UPPER(email) WHERE email = ?', [duplicateEmail]);
+
+  const otherLogin = await send('POST', '/api/auth/login', { email: oldEmail, password: 'password123' }, undefined, '198.51.100.42');
+  assert.equal(otherLogin.status, 200);
+  const otherCookie = otherLogin.headers.getSetCookie()[0].split(';')[0];
+
+  const payload = (newEmail: string, password = 'password123') => ({ newEmail, password });
+  assert.equal((await send('PATCH', '/api/auth/email', payload(email()))).status, 401);
+
+  const wrongPassword = await send('PATCH', '/api/auth/email', payload(email(), 'wrong'), currentCookie, ip);
+  assert.equal(wrongPassword.status, 401);
+  assert.equal((await json<{ error: string }>(wrongPassword)).error, 'Incorrect password');
+  assert.equal((await json<{ email: string }>(await send('GET', '/api/auth/me', undefined, currentCookie))).email, oldEmail);
+
+  assert.equal((await send('PATCH', '/api/auth/email', payload('not-an-email'), currentCookie, ip)).status, 400);
+  assert.equal((await send('PATCH', '/api/auth/email', payload(oldEmail.toUpperCase()), currentCookie, ip)).status, 400);
+  const duplicate = await send('PATCH', '/api/auth/email', payload(duplicateEmail), currentCookie, ip);
+  assert.equal(duplicate.status, 409);
+  assert.equal((await json<{ error: string }>(duplicate)).error, 'That email is already registered');
+
+  const changed = await send('PATCH', '/api/auth/email', payload('  New.Email@Example.com  '), currentCookie, ip);
+  assert.equal(changed.status, 200);
+  assert.equal((await json<{ email: string }>(changed)).email, 'new.email@example.com');
+  assert.equal((await json<{ email: string }>(await send('GET', '/api/auth/me', undefined, currentCookie))).email, 'new.email@example.com');
+  assert.equal((await send('GET', '/api/auth/me', undefined, otherCookie)).status, 401);
+  assert.equal((await send('POST', '/api/auth/login', { email: 'new.email@example.com', password: 'password123' }, undefined, '198.51.100.43')).status, 200);
+  assert.equal((await send('POST', '/api/auth/login', { email: oldEmail, password: 'password123' }, undefined, '198.51.100.44')).status, 401);
+});
+
 test('remember me controls persistent login cookies', async () => {
   const address = email();
   const ip = '198.51.100.6';
