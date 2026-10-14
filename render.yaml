@@ -13,3 +13,11 @@ services:
         value: "10000"
       - key: DATABASE_URL
         sync: false
+      - key: MAIL_PROVIDER
+        value: brevo
+      - key: MAIL_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: APP_URL
+        value: https://studypilot-zsnh.onrender.com

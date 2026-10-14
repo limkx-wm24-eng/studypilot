@@ -4,7 +4,7 @@ export const STATUSES = ['Not started', 'In progress', 'Complete'] as const;
 export const COURSE_TYPES = ['Degree', 'Diploma', 'Foundation'] as const;
 export const KINDS = ['Lecture', 'Practical', 'Tutorial'] as const;
 
-export type User = { id: string; email: string; name: string; courseType: string; programme: string; semesterWeeks: number; semesterStart: string; reminderDays: number };
+export type User = { id: string; email: string; name: string; courseType: string; programme: string; semesterWeeks: number; semesterStart: string; reminderDays: number; emailVerified: boolean; pendingEmail: string | null };
 export type Klass = { id: string; name: string; color: string };
 export type Task = {
   id: string;

@@ -50,6 +50,9 @@ Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to
 
 Existing SQLite databases are migrated automatically on startup.
 
+## Email setup
+For local development, use `MAIL_PROVIDER=console`; reset emails print to the API console with reset tokens redacted. To send email, create a Brevo API key, verify a sender address, then set `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM`, and `APP_URL` (the public base URL of the app). Keep `MAIL_API_KEY` private. If the production key is missing, password reset email delivery stays disabled and the server logs one warning.
+
 ## Deploy
 
 This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/studypilot-ts/blob/main/render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
@@ -70,6 +73,9 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/api/auth/register`, `/api/auth/login`, `/api/auth/logout` | Create an account, log in, log out |
+| POST | `/api/auth/forgot`, `/api/auth/reset` | Request a password reset link or set a new password |
+| POST | `/api/auth/verify-email`, `/api/auth/resend-verification` | Verify an email or resend its verification message |
+| POST | `/api/auth/confirm-email-change` | Confirm an account email change from the new inbox |
 | GET, PATCH, DELETE | `/api/auth/me` | Read or update the profile, or delete the account and all its data |
 | PATCH | `/api/auth/email` | Change the account email after password confirmation |
 | GET, POST | `/api/classes` | List or create classes |

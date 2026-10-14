@@ -9,6 +9,7 @@ export default function Profile({ user, setUser, permission, requestNotification
   const [currentPassword, setCurrentPassword] = useState('');
   const [emailError, setEmailError] = useState('');
   const [emailStatus, setEmailStatus] = useState('');
+  const [pendingEmail, setPendingEmail] = useState(user.pendingEmail);
   const [confirming, setConfirming] = useState(false);
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -21,9 +22,10 @@ export default function Profile({ user, setUser, permission, requestNotification
     setEmailError('');
     setEmailStatus('');
     try {
-      setUser(await api.patch<User>('/api/auth/email', { newEmail, password: currentPassword }));
+      const result = await api.patch<{ message: string; pendingEmail: string }>('/api/auth/email', { newEmail, password: currentPassword });
       setNewEmail('');
-      setEmailStatus('Account email updated.');
+      setPendingEmail(result.pendingEmail);
+      setEmailStatus(result.message);
     } catch (error) {
       setEmailError((error as Error).message);
     } finally {
@@ -40,6 +42,8 @@ export default function Profile({ user, setUser, permission, requestNotification
   <section className="notification-setting">
     <h2>Account email</h2>
     <p>Current email: <b>{user.email}</b></p>
+    <p>Email verification: <b>{user.emailVerified ? 'Verified' : 'Not verified'}</b></p>
+    {pendingEmail && <p role="status">Confirmation sent to {pendingEmail}.</p>}
     <form className="row account-email-form" onSubmit={changeEmail}>
       <label>New email<input type="email" autoComplete="email" required value={newEmail} onChange={(event) => setNewEmail(event.target.value)} /></label>
       <label>Current password<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>

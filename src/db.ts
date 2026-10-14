@@ -1,7 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { readdir, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 
 export type DbValue = SQLInputValue;
 export type DbRow = Record<string, unknown>;
@@ -11,29 +11,65 @@ export interface Database {
   get<T extends DbRow = DbRow>(sql: string, values?: readonly DbValue[]): Promise<T | undefined>;
   run(sql: string, values?: readonly DbValue[]): Promise<{ changes: number }>;
   exec(sql: string): Promise<void>;
+  transaction<T>(operation: (db: Database) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
 
 class SqliteDatabase implements Database {
+  private transactionTail: Promise<void> = Promise.resolve();
+
   constructor(private readonly db: DatabaseSync) {}
 
   async all<T extends DbRow>(sql: string, values: readonly DbValue[] = []): Promise<T[]> {
+    await this.transactionTail;
     return this.db.prepare(sql).all(...values) as T[];
   }
 
   async get<T extends DbRow>(sql: string, values: readonly DbValue[] = []): Promise<T | undefined> {
+    await this.transactionTail;
     return this.db.prepare(sql).get(...values) as T | undefined;
   }
 
   async run(sql: string, values: readonly DbValue[] = []): Promise<{ changes: number }> {
+    await this.transactionTail;
     return { changes: Number(this.db.prepare(sql).run(...values).changes) };
   }
 
   async exec(sql: string): Promise<void> {
+    await this.transactionTail;
     this.db.exec(sql);
   }
 
+  async transaction<T>(operation: (db: Database) => Promise<T>): Promise<T> {
+    const previous = this.transactionTail;
+    let release!: () => void;
+    this.transactionTail = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    const transactionDb: Database = {
+      all: async <R extends DbRow>(sql: string, values: readonly DbValue[] = []) => this.db.prepare(sql).all(...values) as R[],
+      get: async <R extends DbRow>(sql: string, values: readonly DbValue[] = []) => this.db.prepare(sql).get(...values) as R | undefined,
+      run: async (sql: string, values: readonly DbValue[] = []) => ({ changes: Number(this.db.prepare(sql).run(...values).changes) }),
+      exec: async (sql: string) => { this.db.exec(sql); },
+      transaction: async <R>(nested: (db: Database) => Promise<R>) => nested(transactionDb),
+      close: async () => {},
+    };
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await operation(transactionDb);
+        this.db.exec('COMMIT');
+        return result;
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+    } finally {
+      release();
+    }
+  }
+
   async close(): Promise<void> {
+    await this.transactionTail;
     this.db.close();
   }
 }
@@ -41,27 +77,50 @@ class SqliteDatabase implements Database {
 class PostgresDatabase implements Database {
   constructor(private readonly pool: Pool) {}
 
-  private query(sql: string, values: readonly DbValue[] = []) {
+  private query(client: Pool | PoolClient, sql: string, values: readonly DbValue[] = []) {
     let index = 0;
     // Route SQL uses one neutral placeholder syntax; only this adapter knows PostgreSQL uses $1, $2, ... .
     const postgresSql = sql.replace(/\?/g, () => `$${++index}`);
-    return this.pool.query(postgresSql, [...values]);
+    return client.query(postgresSql, [...values]);
   }
 
   async all<T extends DbRow>(sql: string, values: readonly DbValue[] = []): Promise<T[]> {
-    return (await this.query(sql, values)).rows as T[];
+    return (await this.query(this.pool, sql, values)).rows as T[];
   }
 
   async get<T extends DbRow>(sql: string, values: readonly DbValue[] = []): Promise<T | undefined> {
-    return (await this.query(sql, values)).rows[0] as T | undefined;
+    return (await this.query(this.pool, sql, values)).rows[0] as T | undefined;
   }
 
   async run(sql: string, values: readonly DbValue[] = []): Promise<{ changes: number }> {
-    return { changes: (await this.query(sql, values)).rowCount ?? 0 };
+    return { changes: (await this.query(this.pool, sql, values)).rowCount ?? 0 };
   }
 
   async exec(sql: string): Promise<void> {
     await this.pool.query(sql);
+  }
+
+  async transaction<T>(operation: (db: Database) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    const transactionDb: Database = {
+      all: async <R extends DbRow>(sql: string, values: readonly DbValue[] = []) => (await this.query(client, sql, values)).rows as R[],
+      get: async <R extends DbRow>(sql: string, values: readonly DbValue[] = []) => (await this.query(client, sql, values)).rows[0] as R | undefined,
+      run: async (sql: string, values: readonly DbValue[] = []) => ({ changes: (await this.query(client, sql, values)).rowCount ?? 0 }),
+      exec: async (sql: string) => { await client.query(sql); },
+      transaction: async <R>(nested: (db: Database) => Promise<R>) => nested(transactionDb),
+      close: async () => {},
+    };
+    try {
+      await client.query('BEGIN');
+      const result = await operation(transactionDb);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> {

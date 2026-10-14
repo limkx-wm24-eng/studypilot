@@ -1,18 +1,44 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
 import { deleteExpiredSessions } from '../src/auth.js';
 import { openDb } from '../src/db.js';
+import type { Email, Mailer } from '../src/mailer.js';
 import type { Database } from '../src/db.js';
 
 let server: Server;
 let base = '';
 let db: Database;
+let mailer: MemoryMailer;
+const originalAppUrl = process.env.APP_URL;
+
+class MemoryMailer implements Mailer {
+  readonly messages: Email[] = [];
+  private readonly waiters: { count: number; resolve: (email: Email) => void }[] = [];
+
+  async send(email: Email): Promise<void> {
+    this.messages.push(email);
+    for (const waiter of this.waiters.splice(0)) {
+      if (this.messages.length >= waiter.count) waiter.resolve(this.messages[waiter.count - 1]);
+      else this.waiters.push(waiter);
+    }
+  }
+
+  waitForCount(count: number): Promise<Email> {
+    const existing = this.messages[count - 1];
+    if (existing) return Promise.resolve(existing);
+    return new Promise((resolve) => this.waiters.push({ count, resolve }));
+  }
+}
+
 before(async () => {
+  process.env.APP_URL = 'https://studypilot.example.test';
   db = await openDb();
-  const app = createApp(db);
+  mailer = new MemoryMailer();
+  const app = createApp(db, { mailer });
   app.set('trust proxy', 1);
   await new Promise<void>((done) => { server = app.listen(0, done); });
   base = `http://localhost:${(server.address() as AddressInfo).port}`;
@@ -20,6 +46,8 @@ before(async () => {
 after(async () => {
   if (server) await new Promise<void>((done) => server.close(() => done()));
   if (db) await db.close();
+  if (originalAppUrl === undefined) delete process.env.APP_URL;
+  else process.env.APP_URL = originalAppUrl;
 });
 
 const send = (method: string, path: string, body?: unknown, cookie?: string, ip = '127.0.0.1') =>
@@ -36,8 +64,177 @@ const signup = async (ip = '127.0.0.1') => {
   return r.headers.getSetCookie()[0].split(';')[0];
 };
 const json = async <T>(r: Response) => (await r.json()) as T;
+const resetTokenFrom = (message: Email) => {
+  const token = message.text.match(/\?reset=([A-Za-z0-9_-]+)/)?.[1];
+  assert.ok(token);
+  return token;
+};
+const tokenFrom = (message: Email, query: 'verify' | 'confirm-email') => {
+  const token = message.text.match(new RegExp(`\\?${query}=([A-Za-z0-9_-]+)`))?.[1];
+  assert.ok(token);
+  return token;
+};
 const newClass = async (cookie: string) => json<{ id: string }>(await send('POST', '/api/classes', { name: 'Databases', color: '#0f766e' }, cookie));
 const taskFor = (classId: string) => ({ classId, type: 'Homework', name: 'Tutorial 1', priority: 'Medium', status: 'Not started', due: '2026-10-20', grade: null });
+
+test('registration verifies email once, with used and expired tokens rejected', async () => {
+  const address = email();
+  const delivery = mailer.waitForCount(mailer.messages.length + 1);
+  const registered = await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, '192.0.2.60');
+  assert.equal(registered.status, 201);
+  const cookie = registered.headers.getSetCookie()[0].split(';')[0];
+  const user = await json<{ id: string; emailVerified: boolean }>(registered);
+  assert.equal(user.emailVerified, false);
+  const message = await delivery;
+  assert.equal(message.to, address);
+  assert.match(message.subject, /verify/i);
+  const token = tokenFrom(message, 'verify');
+
+  const verified = await send('POST', '/api/auth/verify-email', { token });
+  assert.equal(verified.status, 200);
+  assert.equal((await json<{ emailVerified: boolean }>(await send('GET', '/api/auth/me', undefined, cookie))).emailVerified, true);
+  assert.equal((await send('POST', '/api/auth/verify-email', { token })).status, 400);
+
+  const expired = 'expired-verification-token';
+  await db.run(
+    'INSERT INTO auth_tokens (id, user_id, purpose, token_hash, new_email, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ['expired-verification', user.id, 'verify', createHash('sha256').update(expired).digest('hex'), null, Date.now() - 1, null, Date.now() - 60_000],
+  );
+  assert.equal((await send('POST', '/api/auth/verify-email', { token: expired })).status, 400);
+});
+
+test('verification resend is rate-limited and refused after verification', async () => {
+  const address = email();
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  const registered = await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, '192.0.2.61');
+  const cookie = registered.headers.getSetCookie()[0].split(';')[0];
+  await registrationDelivery;
+
+  const realNow = Date.now;
+  const baseTime = realNow();
+  try {
+    const firstDelivery = mailer.waitForCount(mailer.messages.length + 1);
+    assert.equal((await send('POST', '/api/auth/resend-verification', undefined, cookie)).status, 202);
+    const firstMessage = await firstDelivery;
+    assert.equal(firstMessage.to, address);
+    const cooldown = await send('POST', '/api/auth/resend-verification', undefined, cookie);
+    assert.equal(cooldown.status, 429);
+    assert.ok(Number(cooldown.headers.get('Retry-After')) > 0);
+
+    let lastMessage = firstMessage;
+    for (let attempt = 1; attempt < 5; attempt++) {
+      Date.now = () => baseTime + attempt * 61_000;
+      const delivery = mailer.waitForCount(mailer.messages.length + 1);
+      assert.equal((await send('POST', '/api/auth/resend-verification', undefined, cookie)).status, 202);
+      lastMessage = await delivery;
+    }
+    Date.now = () => baseTime + 10 * 60_000;
+    const dailyCooldown = await send('POST', '/api/auth/resend-verification', undefined, cookie);
+    assert.equal(dailyCooldown.status, 429);
+    assert.ok(Number(dailyCooldown.headers.get('Retry-After')) > 60);
+
+    Date.now = realNow;
+    const verified = await send('POST', '/api/auth/verify-email', { token: tokenFrom(lastMessage, 'verify') });
+    assert.equal(verified.status, 200);
+    assert.equal((await send('POST', '/api/auth/resend-verification', undefined, cookie)).status, 409);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test('forgot password responds generically and only sends mail for a known account', async () => {
+  const address = email();
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, '192.0.2.50')).status, 201);
+  await registrationDelivery;
+  const startingMessageCount = mailer.messages.length;
+  const expected = { message: 'If an account exists for that email, we sent a reset link.' };
+  const unknown = await send('POST', '/api/auth/forgot', { email: email() }, undefined, '192.0.2.51');
+  const unknownBody = await json<{ message: string }>(unknown);
+  assert.equal(unknown.status, 200);
+  assert.deepEqual(unknownBody, expected);
+  assert.equal(mailer.messages.length, startingMessageCount);
+
+  const delivery = mailer.waitForCount(startingMessageCount + 1);
+  const known = await send('POST', '/api/auth/forgot', { email: ` ${address.toUpperCase()} ` }, undefined, '192.0.2.52');
+  assert.equal(known.status, 200);
+  assert.deepEqual(await json(known), unknownBody);
+  const message = await delivery;
+  assert.equal(message.to, address);
+  assert.match(message.text, /^Use this link to choose a new password/);
+  assert.match(message.text, /https:\/\/studypilot\.example\.test\/\?reset=[A-Za-z0-9_-]+/);
+});
+
+test('password reset is one-time, revokes sessions and accepts the new password', async () => {
+  const address = email();
+  const ip = '192.0.2.53';
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  const registered = await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip);
+  await registrationDelivery;
+  const firstSession = registered.headers.getSetCookie()[0].split(';')[0];
+  const secondLogin = await send('POST', '/api/auth/login', { email: address, password: 'password123' }, undefined, ip);
+  const secondSession = secondLogin.headers.getSetCookie()[0].split(';')[0];
+  const delivery = mailer.waitForCount(mailer.messages.length + 1);
+  await send('POST', '/api/auth/forgot', { email: address }, undefined, ip);
+  const token = resetTokenFrom(await delivery);
+
+  const weak = await send('POST', '/api/auth/reset', { token, newPassword: 'weak' });
+  assert.equal(weak.status, 400);
+  const reset = await send('POST', '/api/auth/reset', { token, newPassword: 'new-password-123' });
+  assert.equal(reset.status, 200);
+  assert.deepEqual(await json(reset), { message: 'Password updated.' });
+  assert.equal((await send('POST', '/api/auth/reset', { token, newPassword: 'another-password-123' })).status, 400);
+  assert.equal((await send('GET', '/api/auth/me', undefined, firstSession)).status, 401);
+  assert.equal((await send('GET', '/api/auth/me', undefined, secondSession)).status, 401);
+  assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'password123' }, undefined, '192.0.2.54')).status, 401);
+  assert.equal((await send('POST', '/api/auth/login', { email: address, password: 'new-password-123' }, undefined, '192.0.2.55')).status, 200);
+});
+
+test('invalid, expired and superseded password reset tokens are rejected', async () => {
+  const address = email();
+  const ip = '192.0.2.56';
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  const registered = await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip);
+  await registrationDelivery;
+  const me = await json<{ id: string }>(registered);
+  assert.equal((await send('POST', '/api/auth/reset', { token: 'garbage', newPassword: 'new-password-123' })).status, 400);
+
+  const expiredToken = 'expired-reset-token';
+  await db.run(
+    'INSERT INTO auth_tokens (id, user_id, purpose, token_hash, new_email, expires_at, used_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ['expired-reset', me.id, 'password_reset', createHash('sha256').update(expiredToken).digest('hex'), null, Date.now() - 1, null, Date.now() - 60_000],
+  );
+  assert.equal((await send('POST', '/api/auth/reset', { token: expiredToken, newPassword: 'new-password-123' })).status, 400);
+
+  const firstDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  await send('POST', '/api/auth/forgot', { email: address }, undefined, ip);
+  const oldToken = resetTokenFrom(await firstDelivery);
+  const secondDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  await send('POST', '/api/auth/forgot', { email: address }, undefined, ip);
+  const newToken = resetTokenFrom(await secondDelivery);
+  assert.notEqual(newToken, oldToken);
+  assert.equal((await send('POST', '/api/auth/reset', { token: oldToken, newPassword: 'new-password-123' })).status, 400);
+  assert.equal((await send('POST', '/api/auth/reset', { token: newToken, newPassword: 'new-password-123' })).status, 200);
+});
+
+test('forgot password is rate-limited with the same generic response', async () => {
+  const address = email();
+  const ip = '192.0.2.57';
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
+  assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);
+  await registrationDelivery;
+  const startingMessageCount = mailer.messages.length;
+  const responses: Response[] = [];
+  for (let index = 0; index < 6; index++) {
+    responses.push(await send('POST', '/api/auth/forgot', { email: address }, undefined, ip));
+  }
+  for (const response of responses) {
+    assert.equal(response.status, 200);
+    assert.deepEqual(await json(response), { message: 'If an account exists for that email, we sent a reset link.' });
+  }
+  await mailer.waitForCount(startingMessageCount + 4);
+  assert.equal(mailer.messages.filter((message) => message.to === address && /reset.*password/i.test(message.subject)).length, 4);
+});
 
 test('register, read profile, log out', async () => {
   const cookie = await signup();
@@ -61,12 +258,16 @@ test('users can change their email after confirming their password', async () =>
   const ip = '198.51.100.40';
   const oldEmail = email();
   const duplicateEmail = email();
+  const registrationDelivery = mailer.waitForCount(mailer.messages.length + 1);
   const registered = await send('POST', '/api/auth/register', { email: oldEmail, password: 'password123' }, undefined, ip);
   assert.equal(registered.status, 201);
+  await registrationDelivery;
   const currentCookie = registered.headers.getSetCookie()[0].split(';')[0];
 
+  const duplicateDelivery = mailer.waitForCount(mailer.messages.length + 1);
   const duplicateRegistration = await send('POST', '/api/auth/register', { email: duplicateEmail, password: 'password123' }, undefined, '198.51.100.41');
   assert.equal(duplicateRegistration.status, 201);
+  await duplicateDelivery;
   await db.run('UPDATE users SET email = UPPER(email) WHERE email = ?', [duplicateEmail]);
 
   const otherLogin = await send('POST', '/api/auth/login', { email: oldEmail, password: 'password123' }, undefined, '198.51.100.42');
@@ -87,13 +288,42 @@ test('users can change their email after confirming their password', async () =>
   assert.equal(duplicate.status, 409);
   assert.equal((await json<{ error: string }>(duplicate)).error, 'That email is already registered');
 
+  const oldMailCount = mailer.messages.length;
   const changed = await send('PATCH', '/api/auth/email', payload('  New.Email@Example.com  '), currentCookie, ip);
-  assert.equal(changed.status, 200);
-  assert.equal((await json<{ email: string }>(changed)).email, 'new.email@example.com');
-  assert.equal((await json<{ email: string }>(await send('GET', '/api/auth/me', undefined, currentCookie))).email, 'new.email@example.com');
+  assert.equal(changed.status, 202);
+  assert.deepEqual(await json(changed), { message: 'Check your new inbox to confirm.', pendingEmail: 'new.email@example.com' });
+  const pendingUser = await json<{ email: string; pendingEmail: string | null }>(await send('GET', '/api/auth/me', undefined, currentCookie));
+  assert.equal(pendingUser.email, oldEmail);
+  assert.equal(pendingUser.pendingEmail, 'new.email@example.com');
+  const changeMessage = mailer.messages[oldMailCount];
+  assert.equal(changeMessage.to, 'new.email@example.com');
+  assert.match(changeMessage.text, /confirm-email=/);
+
+  const noticeDelivery = mailer.waitForCount(oldMailCount + 2);
+  const confirmed = await send('POST', '/api/auth/confirm-email-change', { token: tokenFrom(changeMessage, 'confirm-email') }, currentCookie);
+  assert.equal(confirmed.status, 200);
+  const notice = await noticeDelivery;
+  assert.equal(notice.to, oldEmail);
+  assert.match(notice.subject, /changed/i);
+  const updatedUser = await json<{ email: string; emailVerified: boolean; pendingEmail: string | null }>(await send('GET', '/api/auth/me', undefined, currentCookie));
+  assert.equal(updatedUser.email, 'new.email@example.com');
+  assert.equal(updatedUser.emailVerified, true);
+  assert.equal(updatedUser.pendingEmail, null);
   assert.equal((await send('GET', '/api/auth/me', undefined, otherCookie)).status, 401);
   assert.equal((await send('POST', '/api/auth/login', { email: 'new.email@example.com', password: 'password123' }, undefined, '198.51.100.43')).status, 200);
   assert.equal((await send('POST', '/api/auth/login', { email: oldEmail, password: 'password123' }, undefined, '198.51.100.44')).status, 401);
+
+  const takenEmail = email();
+  const pendingMail = mailer.waitForCount(mailer.messages.length + 1);
+  const pendingChange = await send('PATCH', '/api/auth/email', payload(takenEmail), currentCookie, ip);
+  assert.equal(pendingChange.status, 202);
+  const pendingNotice = await pendingMail;
+  const takenRegistrationMail = mailer.waitForCount(mailer.messages.length + 1);
+  assert.equal((await send('POST', '/api/auth/register', { email: takenEmail, password: 'password123' }, undefined, '198.51.100.45')).status, 201);
+  await takenRegistrationMail;
+  const conflict = await send('POST', '/api/auth/confirm-email-change', { token: tokenFrom(pendingNotice, 'confirm-email') }, currentCookie);
+  assert.equal(conflict.status, 409);
+  assert.equal((await json<{ email: string }>(await send('GET', '/api/auth/me', undefined, currentCookie))).email, 'new.email@example.com');
 });
 
 test('remember me controls persistent login cookies', async () => {

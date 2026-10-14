@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { authRoutes, makeRequireUser } from './auth.js';
 import { type Database, type DbRow, type DbValue } from './db.js';
+import { createMailer, type Mailer } from './mailer.js';
 import { timetableRoutes } from './timetable.js';
 
 const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
@@ -30,8 +31,9 @@ const toTask = (r: DbRow) => ({
 const toCourse = (r: DbRow) => ({ id: r.id, semesterLabel: r.semester_label, courseName: r.course_name, creditHours: Number(r.credit_hours), grade: r.grade });
 const invalid = (res: Response, issues: unknown) => void res.status(400).json({ error: 'Invalid input', errors: issues });
 
-export function createApp(db: Database) {
+export function createApp(db: Database, options: { mailer?: Mailer } = {}) {
   const app = express();
+  const mailer = options.mailer ?? createMailer();
   if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
   app.use(helmet({
     contentSecurityPolicy: {
@@ -66,7 +68,7 @@ export function createApp(db: Database) {
   };
 
   app.get('/api/health', (_req, res) => { res.json({ ok: true }); });
-  authRoutes(app, db);
+  authRoutes(app, db, { mailer });
   const auth = makeRequireUser(db);
   app.use('/api/classes', auth);
   app.use('/api/tasks', auth);
