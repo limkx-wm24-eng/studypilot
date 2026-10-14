@@ -34,9 +34,14 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (res.status === 204) return undefined as T;
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error ?? 'Something went wrong');
+  const path = new URL(url, window.location.href).pathname;
+  const authTransition =
+    (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path)) ||
+    (method === 'DELETE' && path === '/api/auth/me');
+  if (authTransition && typeof caches !== 'undefined') await caches.delete('api-network-first');
+  if (res.status === 204) return undefined as T;
   return data as T;
 }
 

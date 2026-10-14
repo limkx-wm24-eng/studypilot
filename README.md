@@ -9,6 +9,7 @@ A study planner for students: classes, tasks (assignments, homework, exams, proj
 - Calculate semester GPA and cumulative CGPA from courses, grades and credit hours.
 - Plan a weekly timetable and monitor attendance allowances.
 - Install the responsive app as a PWA; saved screens are available offline in read-only mode.
+- Offline mode is read-only, and the saved API cache is cleared on logout.
 
 ## Stack
 - **Frontend:** React 19 + TypeScript + Vite (`web/`)

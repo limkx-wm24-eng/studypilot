@@ -18,7 +18,7 @@ export default defineConfig({
     workbox: {
       navigateFallback: '/index.html',
       runtimeCaching: [{
-        urlPattern: ({ url }) => url.pathname.startsWith('/api/'),
+        urlPattern: ({ url }) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/'),
         handler: 'NetworkFirst',
         options: { cacheName: 'api-network-first', networkTimeoutSeconds: 3, cacheableResponse: { statuses: [0, 200] } },
       }],
