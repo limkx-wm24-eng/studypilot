@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Store } from '../store';
+import EmptyState from '../EmptyState';
 
 type Props = Pick<Store, 'classes' | 'tasks' | 'addClass' | 'removeClass'>;
 
@@ -18,19 +19,20 @@ export default function Classes({ classes, tasks, addClass, removeClass }: Props
         {classes.map((c) => {
           const own = tasks.filter((t) => t.classId === c.id);
           const done = own.filter((t) => t.status === 'Complete').length;
+          const progressState = own.length > 0 && done === own.length ? 'complete' : done > 0 ? 'in-progress' : 'not-started';
           return (
             <div className="item" key={c.id}>
               <i className="dot" style={{ background: c.color }} />
               <div className="grow">
                 <b>{c.name}</b><br /><span className="mut">{done} of {own.length} done</span>
-                <div className="bar"><i style={{ width: `${own.length ? (done / own.length) * 100 : 0}%`, background: c.color }} /></div>
+                <div className="bar"><i className={`class-progress ${progressState}`} style={{ width: `${own.length ? (done / own.length) * 100 : 0}%` }} /></div>
               </div>
               <button className="x" aria-label={`Delete ${c.name}`}
                 onClick={() => { if (confirm(`Delete ${c.name} and its ${own.length} tasks?`)) removeClass(c.id); }}>✕</button>
             </div>
           );
         })}
-        {!classes.length && <p className="mut">No classes yet. Add your first one above.</p>}
+        {!classes.length && <EmptyState>No classes yet. Add your first one above.</EmptyState>}
       </div>
     </>
   );

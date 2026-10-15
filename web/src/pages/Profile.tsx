@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { api, COURSE_TYPES, type User } from '../api';
 
 type Permission = NotificationPermission | 'unsupported';
@@ -11,6 +11,11 @@ export default function Profile({ user, setUser, permission, requestNotification
   const [emailStatus, setEmailStatus] = useState('');
   const [pendingEmail, setPendingEmail] = useState(user.pendingEmail);
   const [confirming, setConfirming] = useState(false);
+  useEffect(() => {
+    if (msg !== 'Profile saved.') return;
+    const timer = window.setTimeout(() => setMsg(''), 2600);
+    return () => window.clearTimeout(timer);
+  }, [msg]);
   const save = async (event: FormEvent) => {
     event.preventDefault();
     try { setUser(await api.patch<User>('/api/auth/me', form)); setMsg('Profile saved.'); }
@@ -38,7 +43,7 @@ export default function Profile({ user, setUser, permission, requestNotification
     <label>Programme (optional)<input value={form.programme} maxLength={60} placeholder="e.g. Bachelor of Software Engineering" onChange={(event) => setForm({ ...form, programme: event.target.value })} /></label>
     <label>Remind me<select value={form.reminderDays} onChange={(event) => setForm({ ...form, reminderDays: Number(event.target.value) })}><option value={0}>On the due date</option><option value={1}>1 day before</option><option value={2}>2 days before</option><option value={3}>3 days before</option><option value={7}>7 days before</option></select></label>
     <button className="btn">Save profile</button>
-  </form>{msg && <p role="status">{msg}</p>}
+  </form>{msg && <p className={msg === 'Profile saved.' ? 'toast' : undefined} role="status">{msg}</p>}
   <section className="notification-setting">
     <h2>Account email</h2>
     <p>Current email: <b>{user.email}</b></p>

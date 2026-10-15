@@ -21,6 +21,7 @@ test('account setup and task progress persist across login', async ({ page }) =>
   await expect(page.getByText('E2E Databases')).toBeVisible();
 
   await page.getByRole('button', { name: 'Tasks' }).click();
+  await page.getByText('+ Add task', { exact: true }).click();
   await page.getByLabel('Task name').fill('E2E coursework');
   await page.getByLabel('Due date').fill('2026-12-31');
   await page.getByRole('button', { name: 'Add task' }).click();
@@ -29,6 +30,7 @@ test('account setup and task progress persist across login', async ({ page }) =>
 
   await page.getByRole('button', { name: 'Profile' }).click();
   await page.getByRole('button', { name: 'Log out' }).click();
+  await expect(page.getByRole('button', { name: 'Log in', exact: true })).toBeVisible();
   await page.getByLabel('Email').fill(email);
   await page.getByLabel('Password').fill('e2e-password-123');
   await page.getByLabel('Remember me').check();

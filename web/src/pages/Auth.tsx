@@ -61,7 +61,14 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
 
   const login = view === 'login';
   return (
-    <main className="auth">
+    <main className="auth-layout">
+      <section className="auth-brand" aria-label="About StudyPilot">
+        <span className="logo-mark logo-mark-large" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 6.5h18v19H7z" /><path d="M11 11h10M11 15h10M11 19h7" /></svg></span>
+        <p className="auth-brand-name">StudyPilot</p>
+        <h2>Plan your semester. Never miss a deadline or a class.</h2>
+        <ul><li>Keep classes and deadlines together</li><li>Stay on top of your weekly timetable</li><li>Track grades and attendance</li></ul>
+      </section>
+      <section className="auth auth-card">
       <h1>StudyPilot</h1>
       {!online && <p className="offline-banner" role="status">You are offline. Log in and account changes need a connection.</p>}
       {resetToken ? <>
@@ -103,6 +110,7 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
           </button>
         </p>
       </>}
+      </section>
     </main>
   );
 }

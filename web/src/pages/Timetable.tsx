@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api, KINDS, type Entry, type Mark, type Slot } from '../api';
 import type { Store } from '../store';
+import EmptyState from '../EmptyState';
+import { showToast } from '../toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MARKS: [Mark, string][] = [['present', 'Present'], ['absent', 'Absent'], ['leave', 'Leave']];
@@ -23,7 +25,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
       .then(setEntries).catch((e: Error) => setError(e.message));
   }, [monday]);
 
-  if (!classes.length) return <p className="hint">Add a class first, then add its class times here.</p>;
+  if (!classes.length) return <EmptyState>Add a class first, then add its class times here.</EmptyState>;
   const classId = form.classId || classes[0].id;
 
   // Clicking the current mark again clears it.
@@ -34,6 +36,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
       await api.put('/api/attendance', { slotId: slot.id, date, status: next });
       setEntries((x) => [...x.filter((e) => !(e.slotId === slot.id && e.date === date)), ...(next ? [{ slotId: slot.id, date, status: next }] : [])]);
       setError('');
+      showToast('Attendance saved.');
       refreshSummary();
     } catch (e) { setError((e as Error).message); }
   };
@@ -48,13 +51,13 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
         <button className="btn ghost" onClick={() => setMonday(addDays(monday, 7))}>Next week</button>
         <b>{iso(monday)} to {iso(addDays(monday, 6))}</b>
       </div>
-      {!slots.length && <p className="mut">No class times yet. Add your first one below.</p>}
+      {!slots.length && <EmptyState>No class times yet. Add your first one below.</EmptyState>}
       {DAYS.map((day, i) => {
         const todays = slots.filter((s) => s.weekday === i + 1).sort((a, b) => a.start.localeCompare(b.start));
         if (!todays.length) return null;
         const date = iso(addDays(monday, i));
         return (
-          <section key={day}>
+          <section className="timetable-day" key={day}>
             <h3>{day} <span className="mut">{date}{date === today ? ' (today)' : ''}</span></h3>
             <div className="list">
               {todays.map((s) => {

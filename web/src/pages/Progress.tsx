@@ -5,6 +5,8 @@ import type { Tab } from '../util';
 import { CALENDAR_LABEL, SEMESTERS, currentSemester, isoToday, kind, phase } from '../calendar';
 import { calculateCgpa, calculateGpa, neededAverage } from '../gradeCalc';
 import { LETTER_GRADES, type LetterGrade } from '../gradeScale';
+import EmptyState from '../EmptyState';
+import { showToast } from '../toast';
 
 type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse'> & { user: User; onUser: (u: User) => void; go: (t: Tab) => void };
 const hrs = (n: number) => `${n} hour${n === 1 ? '' : 's'}`;
@@ -21,7 +23,7 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
   const [courseForm, setCourseForm] = useState({ semesterLabel: 'Semester 1', courseName: '', creditHours: 3, grade: '' });
   const [cgpaTarget, setCgpaTarget] = useState(3.5);
   const [futureCredits, setFutureCredits] = useState(20);
-  const update = (patch: Partial<Pick<User, 'semesterWeeks' | 'semesterStart'>>) => api.patch<User>('/api/auth/me', patch).then(onUser).catch(() => {});
+  const update = (patch: Partial<Pick<User, 'semesterWeeks' | 'semesterStart'>>) => api.patch<User>('/api/auth/me', patch).then((updated) => { onUser(updated); showToast('Attendance settings saved.'); }).catch(() => {});
   const cur = currentSemester(isoToday());
   const preset = summary ? SEMESTERS.find((s) => s.start === summary.semesterStart && s.weeks === summary.weeks) : undefined;
   const cgpa = calculateCgpa(courses);
@@ -45,12 +47,12 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
         const gpa = calculateGpa(rows);
         return <section className="grade" key={semester}><h3>{semester} <span className="mut">GPA {gpa.gpa?.toFixed(4) ?? '—'}</span></h3>{rows.map((course) => <div className="course-row" key={course.id}><span className="grow"><b>{course.courseName}</b><br /><span className="mut">{course.creditHours} credit hours</span></span><label className="course-grade">Grade<select value={course.grade ?? ''} aria-label={`Grade for ${course.courseName}`} onChange={(event) => patchCourse(course.id, { grade: event.target.value ? event.target.value as LetterGrade : null })}><option value="">Not yet</option>{LETTER_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</select></label><button className="x" aria-label={`Delete ${course.courseName}`} onClick={() => removeCourse(course.id)}>Delete</button></div>)}</section>;
       })}
-      {!courses.length && <p className="mut">Add completed courses to calculate your GPA and CGPA.</p>}
+      {!courses.length && <EmptyState>Add completed courses to calculate your GPA and CGPA.</EmptyState>}
       <section className="note calculator"><h3>What do I need?</h3><div className="row"><label>Target CGPA<input className="n" type="number" min={0} max={4} step={0.0001} value={cgpaTarget} onChange={(event) => setCgpaTarget(Number(event.target.value))} /></label><label>More credit hours<input className="n" type="number" min={1} step={0.5} value={futureCredits} onChange={(event) => setFutureCredits(Number(event.target.value))} /></label></div>{need.needed === null ? <p>Add at least one graded course and future credit hours to calculate this.</p> : need.reachable ? <p>To reach {cgpaTarget.toFixed(4)}, you need an average grade point of <b>{need.needed.toFixed(4)}</b> over the next {futureCredits} credit hours.</p> : <p>Not reachable: you would need an average grade point of {need.needed.toFixed(4)} over the next {futureCredits} credit hours. The TAR UMT maximum is 4.0000.</p>}</section>
 
       <h2 style={{ marginTop: 32 }}>Task grades</h2>
       <p className="hint">Enter a grade (%) on your tasks to see your average per class and what you still need to hit your target. Every task counts equally.</p>
-      {!classes.length && <p className="mut">Add a class and graded tasks to use this separate task-grade view.</p>}
+      {!classes.length && <EmptyState>Add a class and graded tasks to use this separate task-grade view.</EmptyState>}
       {classes.map((c) => {
         const all = tasks.filter((t) => t.classId === c.id);
         const graded = all.filter((t) => t.grade !== null);
@@ -131,9 +133,9 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
               : a.state === 'careful' ? `Careful: you can only miss ${hrs(rem)} more before reaching the limit.`
               : `You can still miss ${hrs(rem)} of the ${a.allowedHours} allowed.`;
             return (
-              <div className="grade" key={a.classId}>
+              <div className={`grade progress-card progress-${a.state}`} key={a.classId}>
                 <i className="dot" style={{ background: k?.color }} /><b>{k?.name}</b>
-                <div className="bar"><i style={{ width: `${used}%`, background: a.state === 'over' ? 'var(--bad)' : undefined }} /></div>
+                <div className="bar"><i style={{ width: `${used}%`, background: a.state === 'over' ? 'var(--bad)' : a.state === 'careful' ? 'var(--warning)' : 'var(--pri)' }} /></div>
                 <p style={{ margin: '6px 0 0' }}>{msg}</p>
                 <p className="mut" style={{ margin: 0 }}>
                   {a.percent === null ? 'No classes logged yet.' : `Attendance so far: ${a.percent}% from ${a.loggedHours} logged hours.`} {a.weeklyHours} hours a week, {a.totalHours} hours this semester.
