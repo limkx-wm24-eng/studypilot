@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SYNTHETIC SAMPLE (narrow layout) - not a real timetable</title>
+<style>
+  body { font-family: "Open Sans", Arial, sans-serif; font-size: 9px; margin: 0; color: #333; }
+  h2 { font-size: 16px; font-weight: 300; margin: 8px 0; }
+  table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+  th, td { border: 1px solid #ddd; padding: 3px; vertical-align: top; }
+  .grid td { text-align: center; height: 34px; }
+  .grid .day { width: 14%; text-align: left; }
+  .cell { margin: 2px 0; }
+  .red { color: #a33; }
+  .no { width: 5%; } .course { width: 40%; } .dt { width: 20%; } .venue { width: 14%; } .lect { width: 21%; }
+  .link { display: block; word-break: break-all; margin-top: 2px; }
+  .icon { font-family: FontAwesome, sans-serif; }
+</style>
+</head>
+<body>
+<h2>My Timetable</h2>
+<p><b>Kuala Lumpur Campus</b><br><b>202609 Semester</b> ( Monday, 2026-11-02 ~ Sunday, 2026-12-20 )</p>
+<p>Week 3 : 2026-11-16 ~ 2026-11-22</p>
+<p><b>Semester Timetable By Week &amp; Date :</b></p>
+<table class="grid">
+<tr><td class="day">Day/Time</td><td>08:00 - 09:00</td><td>09:00 - 10:00</td><td>10:00 - 11:00</td><td>11:00 - 12:00</td></tr>
+<tr><td class="day">Mon<br>2026-11-16</td><td></td><td></td>
+  <td><div class="cell">BDEM2022 (L)<br>DK 4<br>Dr Alpha Example<br>1:00 PM - 3:00 PM</div></td>
+  <td><div class="cell">BDEM2022 (L)<br>DK 4<br>Dr Alpha Example<br>3:00 PM - 5:00 PM<br><span class="red">(Replaced class for 2026-11-09)</span></div></td></tr>
+<tr><td class="day">Tue<br>2026-11-17</td><td></td><td></td>
+  <td><div class="cell">BDEM3033 (T)<br>TA244<br>Mr Gamma Placeholder<br>11:00 AM - 12:00 PM</div></td><td></td></tr>
+</table>
+
+<p><b>Semester Timetable By Course :</b></p>
+<table>
+<tr><th class="no">No</th><th class="course">Course</th><th class="dt">Day &amp; Time (Duration)</th><th class="venue">Venue</th><th class="lect">Lecturer/Instructor</th></tr>
+
+<tr>
+<td>1</td>
+<td>0% (viewAttendance.jsp?crs=BDEM1011) <b>BDEM1011</b> SAMPLE PROJECT I</td>
+<td>Course Without Class ( Project/Industrial Training Class )</td>
+<td>NIL</td>
+<td>Ms Delta Demo (weekly)</td>
+</tr>
+
+<tr>
+<td rowspan="2">2</td>
+<td rowspan="2">100% (viewAttendance.jsp?crs=BDEM2022) <b>BDEM2022</b> ADVANCED GADGET ENGINEERING AND APPLIED MEASUREMENT
+  <span class="link"><span class="icon">&#xf0f6;</span> Course Plan (courseplan.jsp?fid=00000000-0000-0000-0000-000000000003&amp;fcourse=BDEM2022&amp;fsession=202609&amp;fcoursetype=SHORT)</span>
+  <span class="link"><span class="icon">&#xf0f6;</span> Course Syllabus</span></td>
+<td>Mon , 1:00 PM ~ 3:00 PM ( Lecture: 2.0 hours ) <span class="red">( having replacement class )</span></td>
+<td>DK 4, DK Buildings</td>
+<td>Dr Alpha Example (Weekly)</td>
+</tr>
+<tr>
+<td>Wed , 4:00 PM ~ 6:00 PM ( Lecture: 2.0 hours )</td>
+<td>DK SG 4, DK Buildings</td>
+<td>Dr Alpha Example (Weekly)</td>
+</tr>
+
+<tr>
+<td rowspan="3">3</td>
+<td rowspan="3">100% (viewAttendance.jsp?crs=BDEM3033) <b>BDEM3033</b> SAMPLE PROJECT II
+  <span class="link"><span class="icon">&#xf0f6;</span> Course Plan (courseplan.jsp?fid=00000000-0000-0000-0000-000000000004&amp;fcourse=BDEM3033&amp;fsession=202609&amp;fcoursetype=SHORT)</span>
+  <span class="link"><span class="icon">&#xf0f6;</span> Course Syllabus</span></td>
+<td>Tue , 12:00 PM ~ 1:00 PM ( Tutorial: 1.0 hour )</td>
+<td>TA244, Block TA</td>
+<td>Mr Gamma Placeholder (Weekly)</td>
+</tr>
+<tr>
+<td>Tue , 11:00 AM ~ 12:00 PM ( Tutorial: 1.0 hour )</td>
+<td>TA244, Block TA</td>
+<td>Mr Gamma Placeholder (Weekly)</td>
+</tr>
+<tr>
+<td>Thu , 2:00 PM ~ 3:00 PM ( Practical: 1.0 hour )</td>
+<td>D303A, Block D</td>
+<td>Ms Beta Sample (Weekly)</td>
+</tr>
+</table>
+<p>* Please contact your faculty/centre for further details if a course is missing the course plan.</p>
+</body>
+</html>

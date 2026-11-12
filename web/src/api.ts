@@ -27,6 +27,10 @@ export type ClassSummary = {
 };
 export type Summary = { requiredPercent: number | null; weeks: number; semesterStart: string; classes: ClassSummary[] };
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly conflicts: { row: number; with: number | string }[] = []) { super(message); }
+}
+
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
   if (!navigator.onLine) throw new Error(method === 'GET' ? 'You are offline. Showing saved app content only.' : 'You are offline. Changes are disabled until you reconnect.');
   const res = await fetch(url, {
@@ -35,7 +39,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? 'Something went wrong');
+  if (!res.ok) throw new ApiError(data.error ?? 'Something went wrong', res.status, data.conflicts);
   const path = new URL(url, window.location.href).pathname;
   const authTransition =
     (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path)) ||

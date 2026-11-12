@@ -11,7 +11,7 @@ export default function Classes({ classes, tasks, addClass, removeClass }: Props
       <p className="hint">Add the classes you take. Tasks and grades belong to a class.</p>
       <form className="row" onSubmit={async (e) => { e.preventDefault(); await addClass(name.trim()); setName(''); }}>
         <label>Class name
-          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} required placeholder="e.g. Database Systems" />
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required placeholder="e.g. Database Systems" />
         </label>
         <button className="btn">Add class</button>
       </form>

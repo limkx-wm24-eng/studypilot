@@ -29,7 +29,7 @@ export default defineConfig({
   outputDir: join(tempDir, 'test-results'),
   fullyParallel: false,
   workers: 1,
-  use: { baseURL: `http://127.0.0.1:${port}` },
+  use: { baseURL: `http://127.0.0.1:${port}`, channel: process.env.STUDYPILOT_E2E_CHANNEL },
   webServer: {
     command: 'node dist/server.js',
     url: `http://127.0.0.1:${port}/api/health`,

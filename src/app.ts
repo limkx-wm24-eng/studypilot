@@ -7,12 +7,14 @@ import { authRoutes, makeRequireUser } from './auth.js';
 import { type Database, type DbRow, type DbValue } from './db.js';
 import { createMailer, type Mailer } from './mailer.js';
 import { timetableRoutes } from './timetable.js';
+import { className } from './classSchema.js';
+import { timetableImportRoutes } from './timetableImport.js';
 
 const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
 const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'] as const;
 const STATUSES = ['Not started', 'In progress', 'Complete'] as const;
 
-const classBody = z.object({ name: z.string().trim().min(1).max(40), color: z.string().regex(/^#[0-9a-f]{6}$/i) });
+const classBody = z.object({ name: className, color: z.string().regex(/^#[0-9a-f]{6}$/i) });
 const taskBody = z.object({
   classId: z.string().min(1).max(64), type: z.enum(TYPES), name: z.string().trim().min(1).max(60),
   priority: z.enum(PRIORITIES), status: z.enum(STATUSES), due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), grade: z.number().min(0).max(100).nullable(),
@@ -74,6 +76,7 @@ export function createApp(db: Database, options: { mailer?: Mailer } = {}) {
   app.use('/api/tasks', auth);
   app.use('/api/courses', auth);
   timetableRoutes(app, db, auth);
+  timetableImportRoutes(app, db, auth);
 
   app.get('/api/classes', async (_req, res) => {
     res.json(await db.all('SELECT id, name, color FROM classes WHERE user_id = ? ORDER BY created_at, id', [uid(res)]));

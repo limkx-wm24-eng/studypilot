@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import type { User } from '../api';
 import { api, KINDS, type Entry, type Mark, type Slot } from '../api';
 import type { Store } from '../store';
 import EmptyState from '../EmptyState';
@@ -11,9 +12,19 @@ const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.ge
 const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const mondayOf = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 
-type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary'>;
+const ImportTimetable = lazy(() => import('../import/ImportTimetable'));
+type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary' | 'refreshTimetable'> & { onUser: (user: User) => void };
 
-export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary }: Props) {
+export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary, refreshTimetable, onUser }: Props) {
+  const [importing, setImporting] = useState(false);
+  const importButton = useRef<HTMLButtonElement>(null);
+  const wasImporting = useRef(false);
+  useEffect(() => {
+    if (wasImporting.current && !importing) importButton.current?.focus();
+    wasImporting.current = importing;
+  }, [importing]);
+  const importControls = <><button ref={importButton} className="btn" onClick={() => setImporting(true)}>Import timetable</button>
+    {importing && <Suspense fallback={<p role="status">Loading importer...</p>}><ImportTimetable classes={classes} slots={slots} onUser={onUser} refresh={refreshTimetable} onClose={() => setImporting(false)} /></Suspense>}</>;
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [entries, setEntries] = useState<Entry[]>([]);
   const [error, setError] = useState('');
@@ -25,7 +36,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
       .then(setEntries).catch((e: Error) => setError(e.message));
   }, [monday]);
 
-  if (!classes.length) return <EmptyState>Add a class first, then add its class times here.</EmptyState>;
+  if (!classes.length) return <>{importControls}<EmptyState>Import your portal timetable, or add a class first to enter class times.</EmptyState></>;
   const classId = form.classId || classes[0].id;
 
   // Clicking the current mark again clears it.
@@ -43,6 +54,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
 
   return (
     <>
+      {importControls}
       <p className="hint">Add your weekly class times, then mark each class as present, absent or on approved leave. Approved leave counts as attended.</p>
       {error && <p className="bad" role="alert">{error}</p>}
       <div className="row">

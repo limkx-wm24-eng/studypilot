@@ -29,6 +29,7 @@ jobs:
       - run: npm ci
       - run: npm --prefix web ci
       - run: npm run build:all
+      - run: npm --prefix web run test:import
       - run: npm test
         env:
           DATABASE_URL: postgresql://studypilot:studypilot@localhost:5432/studypilot_test

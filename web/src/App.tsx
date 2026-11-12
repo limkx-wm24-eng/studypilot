@@ -120,7 +120,7 @@ function Shell({ user, setUser, online }: { user: User; setUser: (user: User | n
           : tab === 'dash' ? <Dashboard name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
           : tab === 'classes' ? <Classes {...store} />
           : tab === 'tasks' ? <Tasks {...store} />
-          : tab === 'timetable' ? <Timetable {...store} />
+          : tab === 'timetable' ? <Timetable {...store} onUser={changeUser} />
           : tab === 'progress' ? <Progress {...store} user={user} onUser={changeUser} go={setTab} />
           : <Profile user={user} setUser={changeUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
       </fieldset>

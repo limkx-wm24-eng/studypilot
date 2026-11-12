@@ -77,6 +77,78 @@ const tokenFrom = (message: Email, query: 'verify' | 'confirm-email') => {
 const newClass = async (cookie: string) => json<{ id: string }>(await send('POST', '/api/classes', { name: 'Databases', color: '#0f766e' }, cookie));
 const taskFor = (classId: string) => ({ classId, type: 'Homework', name: 'Tutorial 1', priority: 'Medium', status: 'Not started', due: '2026-10-20', grade: null });
 
+const importSlot = { className: 'BMXX1001 Synthetic Widgets', kind: 'Lecture', weekday: 1, start: '08:00', end: '10:00', room: 'DK ABA' };
+
+test('timetable import creates classes once, includes projects, reuses case-insensitive names and skips duplicates', async () => {
+  const cookie = await signup();
+  const payload = { classes: [{ name: ' BMXX1002 Synthetic Project ' }, ...Array.from({ length: 41 }, () => ({ name: importSlot.className }))], slots: [importSlot, { ...importSlot }] };
+  const first = await send('POST', '/api/import/timetable', payload, cookie);
+  assert.equal(first.status, 201);
+  assert.deepEqual(await first.json(), { createdClasses: 2, createdSlots: 1, skipped: 1 });
+  const again = await send('POST', '/api/import/timetable', { slots: [{ ...importSlot, className: importSlot.className.toUpperCase() }] }, cookie);
+  assert.deepEqual(await again.json(), { createdClasses: 0, createdSlots: 0, skipped: 1 });
+  assert.equal((await json<unknown[]>(await send('GET', '/api/classes', undefined, cookie))).length, 2);
+});
+
+test('timetable import rolls back conflicting payloads and reports one-based rows', async () => {
+  const cookie = await signup();
+  const result = await send('POST', '/api/import/timetable', { classes: [{ name: 'Synthetic Project' }], slots: [importSlot, { ...importSlot, className: 'Other Synthetic Class', start: '09:00' }] }, cookie);
+  assert.equal(result.status, 409);
+  assert.deepEqual((await json<{ conflicts: unknown[] }>(result)).conflicts, [{ row: 2, with: 1 }]);
+  assert.deepEqual(await (await send('GET', '/api/classes', undefined, cookie)).json(), []);
+  assert.deepEqual(await (await send('GET', '/api/slots', undefined, cookie)).json(), []);
+});
+
+test('timetable import rejects existing clashes without writing classes', async () => {
+  const cookie = await signup();
+  await send('POST', '/api/import/timetable', { slots: [importSlot] }, cookie);
+  const result = await send('POST', '/api/import/timetable', { slots: [{ ...importSlot, className: 'Synthetic Conflict', start: '09:00' }] }, cookie);
+  assert.equal(result.status, 409);
+  assert.deepEqual((await result.json()).conflicts, [{ row: 1, with: 'existing' }]);
+  assert.equal((await json<unknown[]>(await send('GET', '/api/classes', undefined, cookie))).length, 1);
+});
+
+test('timetable import validates limits, times, kinds and class-name length', async () => {
+  const cookie = await signup();
+  for (const slots of [Array(201).fill(importSlot), [{ ...importSlot, start: '25:00' }], [{ ...importSlot, end: '07:00' }], [{ ...importSlot, kind: 'Unknown' }], [{ ...importSlot, className: 'x'.repeat(61) }], Array.from({ length: 41 }, (_, i) => ({ ...importSlot, className: `Synthetic ${i}` }))]) {
+    assert.equal((await send('POST', '/api/import/timetable', { slots }, cookie)).status, 400);
+  }
+  const valid = await send('POST', '/api/import/timetable', { slots: [{ ...importSlot, className: 'x'.repeat(60) }] }, cookie);
+  assert.equal(valid.status, 201);
+});
+
+test('timetable imports require login and never match or alter another user’s classes', async () => {
+  assert.equal((await send('POST', '/api/import/timetable', { slots: [importSlot] })).status, 401);
+  const first = await signup();
+  const second = await signup();
+  for (const cookie of [first, second]) {
+    const result = await send('POST', '/api/import/timetable', { slots: [importSlot] }, cookie);
+    assert.equal(result.status, 201);
+    assert.deepEqual(await result.json(), { createdClasses: 1, createdSlots: 1, skipped: 0 });
+  }
+  const a = await json<{ id: string }[]>(await send('GET', '/api/classes', undefined, first));
+  const b = await json<{ id: string }[]>(await send('GET', '/api/classes', undefined, second));
+  assert.notEqual(a[0].id, b[0].id);
+  assert.equal((await json<unknown[]>(await send('GET', '/api/slots', undefined, first))).length, 1);
+});
+
+test('timetable imports are limited to ten attempts per hour per user', async () => {
+  const cookie = await signup();
+  for (let i = 0; i < 10; i++) assert.equal((await send('POST', '/api/import/timetable', { slots: [] }, cookie)).status, 201);
+  const limited = await send('POST', '/api/import/timetable', { slots: [] }, cookie);
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get('Retry-After')) > 0);
+  assert.equal((await send('POST', '/api/import/timetable', { slots: [] }, await signup())).status, 201);
+});
+
+test('database rejects oversized class names independently of API validation', async () => {
+  const cookie = await signup();
+  const user = await json<{ id: string }>(await send('GET', '/api/auth/me', undefined, cookie));
+  await assert.rejects(db.run('INSERT INTO classes (id, user_id, name, color) VALUES (?, ?, ?, ?)', ['synthetic-oversized', user.id, 'x'.repeat(61), '#0f766e']));
+  const c = await newClass(cookie);
+  await assert.rejects(db.run('UPDATE classes SET name = ? WHERE id = ?', ['x'.repeat(61), c.id]));
+});
+
 test('registration verifies email once, with used and expired tokens rejected', async () => {
   const address = email();
   const delivery = mailer.waitForCount(mailer.messages.length + 1);

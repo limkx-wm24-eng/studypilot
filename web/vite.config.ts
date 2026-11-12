@@ -16,6 +16,7 @@ export default defineConfig({
       ],
     },
     workbox: {
+      globIgnores: ['**/pdf-*.js', '**/pdf.worker*'],
       navigateFallback: '/index.html',
       runtimeCaching: [{
         urlPattern: ({ url }) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/'),

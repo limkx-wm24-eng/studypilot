@@ -131,9 +131,10 @@ class PostgresDatabase implements Database {
 const migrationsPath = fileURLToPath(new URL('../migrations/', import.meta.url));
 const duplicateColumn = (error: unknown) => error instanceof Error && /duplicate column|already exists/i.test(error.message);
 
-async function migrate(db: Database): Promise<void> {
+async function migrate(db: Database, dialect: 'sqlite' | 'postgres'): Promise<void> {
   await db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)');
-  const files = (await readdir(migrationsPath)).filter((file) => /^\d+_.+\.sql$/.test(file)).sort();
+  const files = (await readdir(migrationsPath)).filter((file) => /^\d+_.+\.sql$/.test(file)
+    && (!/\.(sqlite|postgres)\.sql$/.test(file) || file.endsWith(`.${dialect}.sql`))).sort();
   for (const file of files) {
     if (await db.get('SELECT id FROM schema_migrations WHERE id = ?', [file])) continue;
     const sql = await readFile(`${migrationsPath}/${file}`, 'utf8');
@@ -151,6 +152,6 @@ export async function openDb(path = ':memory:'): Promise<Database> {
   const database = process.env.DATABASE_URL
     ? new PostgresDatabase(new Pool({ connectionString: process.env.DATABASE_URL }))
     : new SqliteDatabase(new DatabaseSync(path, { enableForeignKeyConstraints: true }));
-  await migrate(database);
+  await migrate(database, process.env.DATABASE_URL ? 'postgres' : 'sqlite');
   return database;
 }

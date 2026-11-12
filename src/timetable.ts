@@ -6,10 +6,13 @@ import { type Database, type DbRow } from './db.js';
 export const REQUIRED_PERCENT: Record<string, number> = { Degree: 80, Diploma: 80, Foundation: 80 };
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const slotBody = z.object({
-  classId: z.string().min(1).max(64), kind: z.enum(['Lecture', 'Practical', 'Tutorial']), weekday: z.number().int().min(1).max(7),
+export const slotFields = z.object({
+  kind: z.enum(['Lecture', 'Practical', 'Tutorial']), weekday: z.number().int().min(1).max(7),
   start: time, end: time, room: z.string().trim().max(30).default(''),
-}).refine((slot) => slot.end > slot.start, { message: 'The end time must be after the start time' });
+});
+export const validSlotOrder = (slot: { start: string; end: string }) => slot.end > slot.start;
+const slotBody = slotFields.extend({ classId: z.string().min(1).max(64) })
+  .refine(validSlotOrder, { message: 'The end time must be after the start time' });
 const markBody = z.object({ slotId: z.string().min(1), date, status: z.enum(['present', 'absent', 'leave']).nullable() });
 const mins = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
 const isoWeekday = (value: string) => ((new Date(`${value}T00:00:00Z`).getUTCDay() + 6) % 7) + 1;

@@ -38,6 +38,11 @@ export function useStore() {
 
   return {
     classes, tasks, slots, courses, summary, loading, error, refreshSummary,
+    refreshTimetable: async () => {
+      const [nextClasses, nextSlots] = await Promise.all([api.get<Klass[]>('/api/classes'), api.get<Slot[]>('/api/slots')]);
+      setClasses(nextClasses); setSlots(nextSlots);
+      await refreshSummary();
+    },
     clearError: () => setError(''),
     addClass: (name: string) => act(async () => {
       const c = await api.post<Klass>('/api/classes', { name, color: PALETTE[classes.length % PALETTE.length] });

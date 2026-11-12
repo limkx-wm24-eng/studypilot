@@ -1,5 +1,7 @@
 node_modules
 .tools
+*.pdf
+!web/src/import/fixtures/*.pdf
 dist
 *.db
 test-results/

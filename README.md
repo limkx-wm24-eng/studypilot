@@ -11,6 +11,16 @@ A study planner for students: classes, tasks (assignments, homework, exams, proj
 - Install the responsive app as a PWA; saved screens are available offline in read-only mode.
 - Offline mode is read-only, and the saved API cache is cleared on logout.
 
+<!-- Import screenshot placeholder: add a synthetic-data screenshot in docs/ after capturing the review screen. -->
+
+## Import your timetable
+
+On Timetable, choose **Import timetable** and select the TAR UMT portal's My Timetable PDF, or paste its **Semester Timetable By Course** table. Review and edit the classes and sessions before confirming. Projects and training without weekly sessions can also be created as classes.
+
+Your PDF is read in your browser and never uploaded. Only the classes and sessions you confirm are sent to your account. From the portal, press Ctrl+P and choose **Save as PDF**, rather than **Microsoft Print to PDF**. Include the By Course table; any week works, including printing from a phone browser.
+
+Limits: 10 MB, 20 PDF pages, 40 classes and 200 sessions per import. Everything is imported as weekly. Image-only PDFs need re-saving with a text layer or pasting the table; OCR is not supported. Identical sessions are skipped and overlapping sessions must be fixed or unchecked.
+
 ## Stack
 - **Frontend:** React 19 + TypeScript + Vite (`web/`)
 - **API:** Node.js + Express 5 + TypeScript, zod request validation (`src/`)
@@ -37,10 +47,13 @@ The API runs on http://localhost:3000. The web server runs on http://localhost:5
 Run tests and build/start the production app:
 ```bash
 npm test
+npm --prefix web run test:import
 npm run test:e2e
 npm run build:all
 npm start
 ```
+
+`npm test` forces an isolated in-memory SQLite database and ignores inherited `DATABASE_URL` and `DB_PATH` settings. On Windows, to run Playwright with an installed Microsoft Edge instead of its bundled Chromium, set `$env:STUDYPILOT_E2E_CHANNEL = 'msedge'` before running the suite.
 
 Build and run the Docker image:
 ```bash
