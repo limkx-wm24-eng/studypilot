@@ -16,13 +16,15 @@ export default defineConfig({
       ],
     },
     workbox: {
+      importScripts: ['/sw-privacy.js'],
       globIgnores: ['**/pdf-*.js', '**/pdf.worker*'],
       navigateFallback: '/index.html',
-      runtimeCaching: [{
-        urlPattern: ({ url }) => url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/auth/'),
-        handler: 'NetworkFirst',
-        options: { cacheName: 'api-network-first', networkTimeoutSeconds: 3, cacheableResponse: { statuses: [0, 200] } },
-      }],
+      navigateFallbackDenylist: [/^\/api(?:\/|\?|$)/i],
+      runtimeCaching: (['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'] as const).map((method) => ({
+        urlPattern: ({ url }: { url: URL }) => /^\/api(?:\/|$)/i.test(url.pathname),
+        handler: 'NetworkOnly' as const,
+        method,
+      })),
     },
   })],
   server: { proxy: { '/api': 'http://localhost:3000' } },

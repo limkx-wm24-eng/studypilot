@@ -6,9 +6,14 @@ export interface Mailer {
 
 export class ConsoleMailer implements Mailer {
   async send(email: Email): Promise<void> {
-    if (process.env.NODE_ENV === 'production') return;
-    const text = email.text.replace(/([?&](?:reset|verify|confirm-email)=)[A-Za-z0-9_-]+/g, '$1[REDACTED]');
-    console.info('Email (authentication tokens redacted):', { ...email, text });
+    if (process.env.NODE_ENV && process.env.NODE_ENV !== 'development') return;
+    for (const link of email.text.match(/https?:\/\/[^\s]+/g) ?? []) {
+      const url = new URL(link);
+      if (!['reset', 'verify', 'confirm-email'].some((key) => url.searchParams.has(key))) continue;
+      url.username = '';
+      url.password = '';
+      console.info('Development token link:', url.toString());
+    }
   }
 }
 

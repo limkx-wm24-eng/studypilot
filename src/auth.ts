@@ -114,6 +114,21 @@ export function authRoutes(
   failures: AuthFailureStore = new InMemoryAuthFailureStore(),
 ) {
   const mailer = options.mailer ?? createMailer();
+  const consumptionLimits = new Map<string, number[]>();
+  const limitConsumption: import('express').RequestHandler = (req, res, next) => {
+    const now = Date.now();
+    const windowMs = 15 * 60_000;
+    for (const [key, times] of consumptionLimits) if (times[times.length - 1] <= now - windowMs) consumptionLimits.delete(key);
+    const key = `${req.route.path}:${getClientIp(req)}`;
+    const recent = (consumptionLimits.get(key) ?? []).filter((time) => time > now - windowMs);
+    if (recent.length >= 10) {
+      res.set('Retry-After', String(Math.max(1, Math.ceil((recent[0] + windowMs - now) / 1000))))
+        .status(429).json({ error: 'Too many token attempts. Try again later.' });
+      return;
+    }
+    consumptionLimits.set(key, [...recent, now]);
+    next();
+  };
   const requireUser = makeRequireUser(db);
   const getUser = async (id: string) => toUser((await db.get('SELECT * FROM users WHERE id = ?', [id]))!);
   const getProfile = async (id: string) => {
@@ -241,7 +256,7 @@ export function authRoutes(
     }
   });
 
-  app.post('/api/auth/reset', async (req, res) => {
+  app.post('/api/auth/reset', limitConsumption, async (req, res) => {
     const parsed = resetBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: RESET_INVALID_MESSAGE });
     const tokenHash = sha(parsed.data.token);
@@ -265,7 +280,7 @@ export function authRoutes(
     res.json({ message: 'Password updated.' });
   });
 
-  app.post('/api/auth/verify-email', async (req, res) => {
+  app.post('/api/auth/verify-email', limitConsumption, async (req, res) => {
     const parsed = z.object({ token: z.string().min(1).max(128) }).safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'This verification link is invalid or has expired.' });
     const now = Date.now();

@@ -57,6 +57,7 @@ export function createApp(db: Database, options: { mailer?: Mailer } = {}) {
     },
   }));
   app.use(express.json());
+  app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   const uid = (res: Response) => res.locals.userId as string;
   const getClass = (id: string, user: string) => db.get('SELECT id, name, color FROM classes WHERE id = ? AND user_id = ?', [id, user]);
   const getTask = async (id: string, user: string) => {

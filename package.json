@@ -14,6 +14,8 @@
     "build:all": "npm run build:web && npm run build",
     "start": "node dist/server.js",
     "test": "node --import tsx --import ./test/setup.ts --test test/*.test.ts",
+    "test:pg": "node --import tsx scripts/test-pg.ts",
+    "test:sw": "node scripts/check-service-worker.mjs",
     "pretest:e2e": "npm run build:all",
     "test:e2e": "playwright test"
   },

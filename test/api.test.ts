@@ -5,7 +5,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createApp } from '../src/app.js';
 import { deleteExpiredSessions } from '../src/auth.js';
-import { openDb } from '../src/db.js';
+import { openTestDb } from './support/database.js';
 import type { Email, Mailer } from '../src/mailer.js';
 import type { Database } from '../src/db.js';
 
@@ -36,7 +36,7 @@ class MemoryMailer implements Mailer {
 
 before(async () => {
   process.env.APP_URL = 'https://studypilot.example.test';
-  db = await openDb();
+  db = await openTestDb();
   mailer = new MemoryMailer();
   const app = createApp(db, { mailer });
   app.set('trust proxy', 1);
@@ -78,6 +78,30 @@ const newClass = async (cookie: string) => json<{ id: string }>(await send('POST
 const taskFor = (classId: string) => ({ classId, type: 'Homework', name: 'Tutorial 1', priority: 'Medium', status: 'Not started', due: '2026-10-20', grade: null });
 
 const importSlot = { className: 'BMXX1001 Synthetic Widgets', kind: 'Lecture', weekday: 1, start: '08:00', end: '10:00', room: 'DK ABA' };
+
+test('reset and verification consumption limits cover malformed tokens, isolate IPs and expire', async () => {
+  const realNow = Date.now;
+  const now = realNow();
+  try {
+    Date.now = () => now;
+    for (const endpoint of ['reset', 'verify-email']) {
+      const ip = endpoint === 'reset' ? '192.0.2.180' : '192.0.2.181';
+      for (let i = 0; i < 10; i++) assert.equal((await send('POST', `/api/auth/${endpoint}`, {}, undefined, ip)).status, 400);
+      const limited = await send('POST', `/API/AUTH/${endpoint.toUpperCase()}`, {}, undefined, ip);
+      assert.equal(limited.status, 429);
+      assert.equal(Number(limited.headers.get('Retry-After')), 900);
+      assert.equal((await send('POST', `/api/auth/${endpoint}`, {}, undefined, '192.0.2.182')).status, 400);
+    }
+    Date.now = () => now + 15 * 60_000;
+    assert.equal((await send('POST', '/api/auth/reset', {}, undefined, '192.0.2.180')).status, 400);
+    assert.equal((await send('POST', '/api/auth/verify-email', {}, undefined, '192.0.2.181')).status, 400);
+  } finally { Date.now = realNow; }
+});
+
+test('API responses forbid browser caching', async () => {
+  assert.equal((await send('GET', '/api/health')).headers.get('Cache-Control'), 'no-store');
+  assert.equal((await send('GET', '/api/classes')).headers.get('Cache-Control'), 'no-store');
+});
 
 test('timetable import creates classes once, includes projects, reuses case-insensitive names and skips duplicates', async () => {
   const cookie = await signup();
@@ -234,6 +258,10 @@ test('forgot password responds generically and only sends mail for a known accou
   const message = await delivery;
   assert.equal(message.to, address);
   assert.match(message.text, /^Use this link to choose a new password/);
+  assert.match(message.text, /expires in 30 minutes/);
+  const stored = await db.get("SELECT created_at, expires_at FROM auth_tokens WHERE token_hash = ? AND purpose = 'password_reset'", [createHash('sha256').update(resetTokenFrom(message)).digest('hex')]);
+  assert.ok(stored);
+  assert.equal(Number(stored.expires_at) - Number(stored.created_at), 30 * 60_000);
   assert.match(message.text, /https:\/\/studypilot\.example\.test\/\?reset=[A-Za-z0-9_-]+/);
 });
 

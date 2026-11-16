@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, type Course, type User } from '../api';
 import type { Store } from '../store';
 import type { Tab } from '../util';
-import { CALENDAR_LABEL, SEMESTERS, currentSemester, isoToday, kind, phase } from '../calendar';
+import { CALENDAR_LABEL, SEMESTERS, currentSemester, isoToday, kind, phase, teachingEnd } from '../calendar';
 import { calculateCgpa, calculateGpa, neededAverage } from '../gradeCalc';
 import { LETTER_GRADES, type LetterGrade } from '../gradeScale';
 import EmptyState from '../EmptyState';
@@ -109,6 +109,7 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
                 {SEMESTERS.map((s) => <option key={s.start} value={s.start}>{s.name} ({kind(s)}, from {s.start})</option>)}
               </select>
             </label>
+            {preset && <p>Teaching ends {teachingEnd(preset)}. Exams: {preset.exam?.join(' to ') ?? 'unknown'}. Holidays: {preset.holidays?.join(' to ') ?? 'unknown'}.</p>}
             <label>Semester type
               <select value={summary.weeks === 7 ? 7 : 14} onChange={(e) => update({ semesterWeeks: Number(e.target.value) })}>
                 <option value={14}>Long semester (14 teaching weeks)</option>

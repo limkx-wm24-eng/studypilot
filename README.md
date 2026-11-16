@@ -8,8 +8,10 @@ A study planner for students: classes, tasks (assignments, homework, exams, proj
 - Track classes, tasks, deadlines and grades; view tasks in a list or calendar and receive browser deadline reminders.
 - Calculate semester GPA and cumulative CGPA from courses, grades and credit hours.
 - Plan a weekly timetable and monitor attendance allowances.
-- Install the responsive app as a PWA; saved screens are available offline in read-only mode.
-- Offline mode is read-only, and the saved API cache is cleared on logout.
+- Install the responsive app as a PWA; the static app shell is available offline.
+- Offline mode provides the static app shell only. All API requests require a network connection; activating the updated worker removes legacy caches containing API responses.
+
+Every web build checks the generated service worker for API caching, navigation fallback, legacy-cache cleanup and PDF precache exclusions. Run `npm run test:sw` to repeat that check after building.
 
 <!-- Import screenshot placeholder: add a synthetic-data screenshot in docs/ after capturing the review screen. -->
 
@@ -55,6 +57,10 @@ npm start
 
 `npm test` forces an isolated in-memory SQLite database and ignores inherited `DATABASE_URL` and `DB_PATH` settings. On Windows, to run Playwright with an installed Microsoft Edge instead of its bundled Chromium, set `$env:STUDYPILOT_E2E_CHANNEL = 'msedge'` before running the suite.
 
+PostgreSQL verification is opt-in. Set `TEST_DATABASE_URL` explicitly to a disposable PostgreSQL database whose name contains `test`, then run `npm run test:pg`. The command never falls back to `DATABASE_URL`, refuses missing or non-test URLs, and never prints connection strings. It allows only the `sslmode` URL query parameter. The database role needs permission to create schemas.
+
+The runner applies every migration in fresh, empty, isolated schemas, tests migration 010 against existing synthetic classes, slots, tasks and attendance, then runs the import API tests on PostgreSQL. It removes only the schemas it creates. The SQLite suite checks the same populated migration and foreign-key behavior. Migration 010 uses SQLite triggers, so no classes-table rebuild is needed. A separate CI job runs the PostgreSQL checks against a fresh PostgreSQL service container.
+
 Build and run the Docker image:
 ```bash
 docker build -t studypilot .
@@ -65,7 +71,11 @@ Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to
 Existing SQLite databases are migrated automatically on startup.
 
 ## Email setup
-For local development, use `MAIL_PROVIDER=console`; reset emails print to the API console with reset tokens redacted. To send email, create a Brevo API key, verify a sender address, then set `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM`, and `APP_URL` (the public base URL of the app). Keep `MAIL_API_KEY` private. If the production key is missing, password reset email delivery stays disabled and the server logs one warning.
+When running the Vite development server, set `APP_URL=http://localhost:5173` so local token links open the running frontend. Reset and verification emails are implemented; the console provider prints only their links, never recipient details.
+
+Password-reset links expire after **30 minutes**; verification links expire after **24 hours**. Reset tokens are single-use, and resetting a password revokes existing sessions. Console email output is disabled when `NODE_ENV=production`, including mailers constructed before the environment changes. Production never falls back to development token links.
+
+For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (or unset); usable token links print only to your local API console, without recipient information. Console links are suppressed in test and production modes. To send email, create a Brevo API key, verify a sender address, then set `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM`, and `APP_URL` (the public base URL of the app). Keep `MAIL_API_KEY` private. If the production key is missing, password reset email delivery stays disabled and the server logs one warning.
 
 ## Deploy
 
@@ -109,12 +119,13 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 - Required attendance is 80% for Degree, Diploma and Foundation (`REQUIRED_PERCENT` in `src/timetable.ts`).
 - Semester type sets the teaching weeks: long = 14, short = 7. Allowance = 20% of (weekly class hours x teaching weeks), rounded down to whole hours.
 - `web/src/calendar.ts` holds the TAR UMT 2025/2026 calendar (undergraduate and postgraduate, November 2025 intake): First Semester (short, from 10 Nov 2025), Second Semester (long, from 26 Jan 2026) and Third Semester (long, from 15 Jun 2026). The page uses it to show where today falls and to set the semester in one click. TAR UMT says these dates may change, so update the file when the 2026/2027 calendar is published.
+- Semester 202609 has seven teaching weeks, from 2 November to 20 December 2026. Its exam and holiday dates remain unknown and are displayed as such.
 - An optional semester start date limits the log to that semester (from the start date for the number of teaching weeks), so old semesters do not count.
 - These are estimates. Check them against your faculty's official rules.
 
 ## Known limits
 - Authentication rate limits count five failed attempts per email and IP in a rolling 15-minute window. The in-memory counters reset on server restart and are not shared between server instances.
-- No email verification or password reset yet.
+- Reset and email-verification token consumption each allow ten attempts per IP per 15 minutes, including malformed requests. Limited requests return 429 with `Retry-After`.
 - Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
 
 ## Roadmap
@@ -124,7 +135,7 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 - [x] Attendance log (uses the course type from the profile)
 - [x] Calendar view and deadline reminders
 - [ ] .ics export
-- [ ] Email verification
-- [ ] Password reset
+- [x] Email verification
+- [x] Password reset
 - [x] PostgreSQL and a free hosted deployment
 - [x] Browser test with Playwright

@@ -131,9 +131,10 @@ class PostgresDatabase implements Database {
 const migrationsPath = fileURLToPath(new URL('../migrations/', import.meta.url));
 const duplicateColumn = (error: unknown) => error instanceof Error && /duplicate column|already exists/i.test(error.message);
 
-async function migrate(db: Database, dialect: 'sqlite' | 'postgres'): Promise<void> {
+export async function migrate(db: Database, dialect: 'sqlite' | 'postgres', through = Infinity): Promise<void> {
   await db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)');
   const files = (await readdir(migrationsPath)).filter((file) => /^\d+_.+\.sql$/.test(file)
+    && Number(file.split('_')[0]) <= through
     && (!/\.(sqlite|postgres)\.sql$/.test(file) || file.endsWith(`.${dialect}.sql`))).sort();
   for (const file of files) {
     if (await db.get('SELECT id FROM schema_migrations WHERE id = ?', [file])) continue;
@@ -148,10 +149,16 @@ async function migrate(db: Database, dialect: 'sqlite' | 'postgres'): Promise<vo
   }
 }
 
-export async function openDb(path = ':memory:'): Promise<Database> {
-  const database = process.env.DATABASE_URL
-    ? new PostgresDatabase(new Pool({ connectionString: process.env.DATABASE_URL }))
+export async function openDb(path = ':memory:', options: { databaseUrl?: string; migrationsThrough?: number } = {}): Promise<Database> {
+  const databaseUrl = options.databaseUrl ?? process.env.DATABASE_URL;
+  const database = databaseUrl
+    ? new PostgresDatabase(new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 5_000 }))
     : new SqliteDatabase(new DatabaseSync(path, { enableForeignKeyConstraints: true }));
-  await migrate(database, process.env.DATABASE_URL ? 'postgres' : 'sqlite');
+  try {
+    await migrate(database, databaseUrl ? 'postgres' : 'sqlite', options.migrationsThrough);
+  } catch (error) {
+    await database.close();
+    throw error;
+  }
   return database;
 }
