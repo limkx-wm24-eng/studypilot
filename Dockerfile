@@ -8,6 +8,7 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY migrations ./migrations
 COPY web ./web
+COPY scripts ./scripts
 RUN npm run build:all
 
 FROM node:22-alpine
