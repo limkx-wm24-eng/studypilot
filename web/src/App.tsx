@@ -1,10 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, type User } from './api';
 import { useStore } from './store';
 import { daysLeft, type Tab } from './util';
-import { useDeadlineNotifications, closeDeadlineNotifications, clearLegacyNotificationHistory } from './notifications';
-import { listenForSessionEvents } from './sessionEvents';
+import { useDeadlineNotifications } from './notifications';
+import { useUserSession, type UpdateUser, type UserUpdateSource } from './useUserSession';
 import Auth from './pages/Auth';
 import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
@@ -12,7 +11,7 @@ import Classes from './pages/Classes';
 import Tasks from './pages/Tasks';
 import Timetable from './pages/Timetable';
 import Progress from './pages/Progress';
-import Profile from './pages/Profile';
+import Profile, { useProfileEditor } from './pages/Profile';
 import { listenForToasts } from './toast';
 
 type TabIconName = 'dashboard' | 'classes' | 'tasks' | 'timetable' | 'progress' | 'profile';
@@ -39,54 +38,8 @@ function TabIcon({ name }: { name: TabIconName }) {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-  const currentUser = useRef<User | null>(null);
-  const requestVersion = useRef(0);
-  const accountView = useRef<HTMLDivElement>(null);
-  const [checking, setChecking] = useState(true);
-  const [sessionKey, setSessionKey] = useState(0);
-  const sessionGeneration = useRef(0);
-  const verificationPending = useRef(true);
-  const hideAccount = () => {
-    verificationPending.current = true;
-    if (accountView.current) accountView.current.hidden = true;
-    document.documentElement.classList.add('session-checking');
-    setChecking(true);
-  };
-  const changeUser = (next: User | null, forceReset = false) => {
-    requestVersion.current++;
-    if (forceReset || currentUser.current?.id !== next?.id) {
-      closeDeadlineNotifications();
-      clearLegacyNotificationHistory();
-      setSessionKey(++sessionGeneration.current);
-    }
-    currentUser.current = next;
-    verificationPending.current = false;
-    setUser(next);
-    setChecking(false);
-  };
-  const recheckSession = () => {
-    hideAccount();
-    const version = ++requestVersion.current;
-    api.get<User>('/api/auth/me').then((next) => {
-      if (version === requestVersion.current) {
-        flushSync(() => changeUser(next));
-        if (accountView.current) accountView.current.hidden = false;
-        document.documentElement.classList.remove('session-checking');
-      }
-    }).catch(() => {
-      if (version === requestVersion.current) {
-        flushSync(() => changeUser(null));
-        if (accountView.current) accountView.current.hidden = false;
-        document.documentElement.classList.remove('session-checking');
-      }
-    });
-  };
-  useLayoutEffect(() => {
-    if (accountView.current) accountView.current.hidden = checking;
-    document.documentElement.classList.toggle('session-checking', checking);
-  });
-  const [online, setOnline] = useState(() => navigator.onLine);
+  const session = useUserSession();
+  const { user, accountView, checking, sessionError, sessionKey, online, recheckSession } = session;
   const [resetAction, setResetAction] = useState<{ token: string | null } | null>(() => {
     const token = new URLSearchParams(window.location.search).get('reset');
     return token ? { token } : null;
@@ -113,38 +66,11 @@ export default function App() {
       url.searchParams.delete('confirm-email');
       window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     }
-    clearLegacyNotificationHistory();
-    recheckSession();
-    const sessionEvent = listenForSessionEvents((type) => {
-      if (type === 'logout') flushSync(() => changeUser(null, true));
-      else recheckSession();
-    });
-    const visibility = () => { if (document.visibilityState === 'visible') recheckSession(); else hideAccount(); };
-    window.addEventListener('focus', recheckSession);
-    window.addEventListener('blur', hideAccount);
-    document.addEventListener('visibilitychange', visibility);
-    const refresh = () => setOnline(navigator.onLine);
-    window.addEventListener('online', refresh);
-    window.addEventListener('offline', refresh);
-    return () => {
-      requestVersion.current++;
-      sessionEvent();
-      window.removeEventListener('focus', recheckSession);
-      window.removeEventListener('blur', hideAccount);
-      document.removeEventListener('visibilitychange', visibility);
-      window.removeEventListener('online', refresh);
-      window.removeEventListener('offline', refresh);
-      document.documentElement.classList.remove('session-checking');
-    };
   }, [emailAction]);
   if (resetAction) return <ResetPassword key={resetAction.token ?? 'complete'} token={resetAction.token} online={online} onSuccess={() => { stripReset(); setResetAction({ token: null }); recheckSession(); }} onClose={() => { stripReset(); setResetAction(null); recheckSession(); }} />;
   if (emailAction) return <EmailAction type={emailAction.type} token={emailAction.token} />;
-  return <>{checking && <main><LoadingState /></main>}<div ref={accountView} hidden={checking} inert={checking}>
-    {user === undefined ? null : user ? <Shell key={`${user.id}:${sessionKey}`} user={user} setUser={(next) => {
-      if (!verificationPending.current && sessionGeneration.current === sessionKey && currentUser.current?.id === user.id) changeUser(next);
-    }} online={online} sessionReady={!checking} /> : <Auth key={sessionKey} onUser={(next) => {
-      if (sessionGeneration.current === sessionKey) changeUser(next);
-    }} online={online} />}
+  return <>{sessionError && <p className="banner" role="alert">{sessionError} <button className="link" onClick={() => void recheckSession()}>Retry session</button></p>}{checking && <main><LoadingState /></main>}<div ref={accountView} hidden={checking} inert={checking}>
+    {user === undefined ? null : user ? <Shell key={`${user.id}:${sessionKey}`} user={user} setUser={session.leaveAccount} updateUser={session.updateUser} pendingUpdates={session.pendingUpdates} isUserPending={session.isUserPending} online={online} sessionReady={!checking} /> : <Auth key={sessionKey} onUser={session.acceptLogin} online={online} />}
   </div></>;
 }
 
@@ -179,11 +105,19 @@ function EmailAction({ type, token }: { type: 'verify' | 'confirm-email'; token:
   </main>;
 }
 
-function Shell({ user, setUser, online, sessionReady }: { user: User; setUser: (user: User | null) => void; online: boolean; sessionReady: boolean }) {
+function Shell({ user, setUser, updateUser, pendingUpdates, isUserPending, online, sessionReady }: { user: User; setUser: () => void; updateUser: UpdateUser; pendingUpdates: ReadonlySet<UserUpdateSource>; isUserPending: (source: UserUpdateSource) => boolean; online: boolean; sessionReady: boolean }) {
   const [tab, setTab] = useState<Tab>('dash');
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const toastId = useRef(0);
   const store = useStore();
+  const profileEditor = useProfileEditor(user, updateUser);
+  const summarySettings = `${user.courseType}:${user.semesterStart}:${user.semesterWeeks}`;
+  const previousSummarySettings = useRef(summarySettings);
+  useEffect(() => {
+    if (previousSummarySettings.current === summarySettings) return;
+    previousSummarySettings.current = summarySettings;
+    void store.refreshSummary();
+  }, [summarySettings]);
   const notifications = useDeadlineNotifications(user.id, store.tasks, user.reminderDays, sessionReady);
   const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due) < 0 || daysLeft(task.due) <= user.reminderDays)).length;
   useEffect(() => listenForToasts((message) => setToast({ id: ++toastId.current, message })), []);
@@ -192,11 +126,6 @@ function Shell({ user, setUser, online, sessionReady }: { user: User; setUser: (
     const timer = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(timer);
   }, [toast]);
-  const changeUser = (nextUser: User | null) => {
-    setUser(nextUser);
-    if (nextUser) store.refreshSummary();
-    else void caches.delete('api-network-first');
-  };
   const required = tab === 'profile' ? [] : tab === 'progress' ? ['classes', 'tasks', 'courses'] as const : tab === 'timetable' ? ['classes', 'slots'] as const : tab === 'dash' ? ['classes', 'tasks', 'slots'] as const : ['classes', 'tasks'] as const;
   const unavailable = required.some((key) => !store.loads[key].loaded);
   const loading = required.some((key) => !store.loads[key].loaded && store.loads[key].loading);
@@ -211,9 +140,9 @@ function Shell({ user, setUser, online, sessionReady }: { user: User; setUser: (
           : tab === 'dash' ? <Dashboard name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
           : tab === 'classes' ? <Classes {...store} />
           : tab === 'tasks' ? <Tasks {...store} />
-          : tab === 'timetable' ? <Timetable {...store} onUser={changeUser} />
-          : tab === 'progress' ? <Progress {...store} user={user} onUser={changeUser} go={setTab} />
-          : <Profile user={user} setUser={changeUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
+          : tab === 'timetable' ? <Timetable {...store} updateUser={updateUser} />
+          : tab === 'progress' ? <Progress {...store} user={user} saving={pendingUpdates.has('semester')} isUserPending={isUserPending} updateUser={updateUser} go={setTab} />
+          : <Profile user={user} editor={profileEditor} setUser={setUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
       </fieldset>
     </main>{toast && <p key={toast.id} className="toast" role="status">{toast.message}</p>}</>;
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, type Course, type User } from '../api';
+import { type Course, type User } from '../api';
+import type { UpdateUser, UserUpdateSource } from '../useUserSession';
 import type { Store } from '../store';
 import type { Tab } from '../util';
 import { CALENDAR_LABEL, SEMESTERS, currentSemester, isoToday, kind, phase, teachingEnd } from '../calendar';
@@ -8,7 +9,7 @@ import { LETTER_GRADES, type LetterGrade } from '../gradeScale';
 import EmptyState from '../EmptyState';
 import { showToast } from '../toast';
 
-type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse' | 'isPending' | 'loads'> & { user: User; onUser: (u: User) => void; go: (t: Tab) => void };
+type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse' | 'isPending' | 'loads'> & { user: User; updateUser: UpdateUser; saving: boolean; isUserPending: (source: UserUpdateSource) => boolean; go: (t: Tab) => void };
 const hrs = (n: number) => `${n} hour${n === 1 ? '' : 's'}`;
 const weekLabel = (start: string, weeks: number) => {
   if (!start) return null;
@@ -18,26 +19,23 @@ const weekLabel = (start: string, weeks: number) => {
   return week < 1 ? `This semester starts in ${-days} day${days === -1 ? '' : 's'}.` : week > weeks ? `The ${weeks} teaching weeks are over.` : `Week ${week} of ${weeks}.`;
 };
 
-export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, isPending, loads, user, onUser, go }: Props) {
+export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, isPending, loads, user, updateUser, saving, isUserPending, go }: Props) {
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [courseForm, setCourseForm] = useState({ semesterLabel: 'Semester 1', courseName: '', creditHours: 3, grade: '' });
   const [cgpaTarget, setCgpaTarget] = useState(3.5);
   const [futureCredits, setFutureCredits] = useState(20);
   const [semesterDraft, setSemesterDraft] = useState({ semesterStart: user.semesterStart, semesterWeeks: user.semesterWeeks });
   const [settingsError, setSettingsError] = useState('');
-  const [saving, setSaving] = useState(false);
-  const pending = useRef(false);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   useEffect(() => { setSemesterDraft({ semesterStart: user.semesterStart, semesterWeeks: user.semesterWeeks }); }, [user.semesterStart, user.semesterWeeks]);
   const update = async (patch: Partial<Pick<User, 'semesterWeeks' | 'semesterStart'>>) => {
-    if (pending.current) return;
-    pending.current = true; setSaving(true); setSettingsError('');
+    if (isUserPending('semester')) return;
+    setSettingsError('');
     try {
-      const updated = await api.patch<User>('/api/auth/me', patch);
-      if (alive.current) { onUser(updated); showToast('Attendance settings saved.'); }
+      await updateUser(patch, 'semester');
+      if (alive.current) showToast('Attendance settings saved.');
     } catch (failure) { if (alive.current) setSettingsError((failure as Error).message); }
-    finally { pending.current = false; if (alive.current) setSaving(false); }
   };
   const unsaved = semesterDraft.semesterStart !== user.semesterStart || semesterDraft.semesterWeeks !== user.semesterWeeks;
   const cur = currentSemester(isoToday());

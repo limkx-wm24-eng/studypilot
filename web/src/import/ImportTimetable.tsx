@@ -1,13 +1,14 @@
 import { useLayoutEffect, useRef, useState } from 'react';
-import { api, ApiError, KINDS, type Klass, type Slot, type User } from '../api';
+import { api, ApiError, KINDS, type Klass, type Slot } from '../api';
+import type { UpdateUser } from '../useUserSession';
 import { showToast } from '../toast';
 import { findOverlaps, parseTimetableText, validTimeRange, MAX_TIMETABLE_TEXT_LENGTH, TIMETABLE_TEXT_LIMIT_HELP, type ParsedSlot, type ParsedTimetable } from './timetableImport';
 import { extractPdfText, PDF_ERROR_HELP, PdfImportError } from './pdfText';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 type Row = ParsedSlot & { included: boolean };
-type Props = { classes: Klass[]; slots: Slot[]; refresh: () => Promise<void>; onUser: (user: User) => void; onClose: () => void };
-export default function ImportTimetable({ classes, slots, refresh, onUser, onClose }: Props) {
+type Props = { classes: Klass[]; slots: Slot[]; refresh: () => Promise<void>; updateUser: UpdateUser; onClose: () => void };
+export default function ImportTimetable({ classes, slots, refresh, updateUser, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [tab, setTab] = useState('PDF');
   const [text, setText] = useState('');
@@ -78,16 +79,20 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
         classes: projectNames.map((name) => ({ name })),
         slots: selected.map(({ r }) => ({ className: r.className, kind: r.kind, weekday: r.weekday, start: r.start, end: r.end, room: r.room })),
       });
+      if (!alive.current) return;
       let notice = '';
       if (semester && parsed?.semesterStart) {
-        try { onUser(await api.patch<User>('/api/auth/me', { semesterStart: parsed.semesterStart, semesterWeeks: weeks })); }
+        try { await updateUser({ semesterStart: parsed.semesterStart, semesterWeeks: weeks }, 'import'); }
         catch { notice = ' Semester settings could not be saved; update them in Progress.'; }
       }
+      if (!alive.current) return;
       try { await refresh(); }
       catch { notice += ' Reload the page to see your imported sessions.'; }
+      if (!alive.current) return;
       showToast(`Imported ${result.createdClasses} classes and ${result.createdSlots} sessions.${notice}`);
       onClose();
     } catch (error) {
+      if (!alive.current) return;
       if (error instanceof ApiError && error.status === 409) {
         const issues: Record<number, string> = {};
         for (const conflict of error.conflicts) {
@@ -99,7 +104,7 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
         setServerErrors(issues);
       }
       setMessage(error instanceof Error ? error.message : 'Import failed. Please try again.');
-    } finally { setBusy(false); }
+    } finally { if (alive.current) setBusy(false); }
   };
   return <dialog ref={dialog} className="timetable-import" aria-labelledby="import-heading" onCancel={(event) => { if (busy) event.preventDefault(); else onClose(); }} onKeyDown={(event) => {
     if (event.key !== 'Tab') return;

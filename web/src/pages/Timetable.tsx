@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import type { User } from '../api';
+import type { UpdateUser } from '../useUserSession';
 import { api, KINDS, type Entry, type Mark, type Slot } from '../api';
 import type { Store } from '../store';
 import EmptyState from '../EmptyState';
@@ -13,9 +13,9 @@ const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), 
 const mondayOf = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
 
 const ImportTimetable = lazy(() => import('../import/ImportTimetable'));
-type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary' | 'refreshTimetable' | 'isPending'> & { onUser: (user: User) => void };
+type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary' | 'refreshTimetable' | 'isPending'> & { updateUser: UpdateUser };
 
-export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary, refreshTimetable, onUser, isPending }: Props) {
+export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary, refreshTimetable, updateUser, isPending }: Props) {
   const [importing, setImporting] = useState(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const wasImporting = useRef(false);
@@ -24,7 +24,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
     wasImporting.current = importing;
   }, [importing]);
   const importControls = <><button ref={importButton} className="btn" onClick={() => setImporting(true)}>Import timetable</button>
-    {importing && <Suspense fallback={<p role="status">Loading importer...</p>}><ImportTimetable classes={classes} slots={slots} onUser={onUser} refresh={refreshTimetable} onClose={() => setImporting(false)} /></Suspense>}</>;
+    {importing && <Suspense fallback={<p role="status">Loading importer...</p>}><ImportTimetable classes={classes} slots={slots} updateUser={updateUser} refresh={refreshTimetable} onClose={() => setImporting(false)} /></Suspense>}</>;
   const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [entryResult, setEntryResult] = useState<{ week: string; rows: Entry[] }>({ week: '', rows: [] });
   const [loading, setLoading] = useState(true);
