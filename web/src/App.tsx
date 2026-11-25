@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { flushSync } from 'react-dom';
 import { api, type User } from './api';
 import { useStore } from './store';
 import { daysLeft, type Tab } from './util';
-import { useDeadlineNotifications } from './notifications';
+import { useDeadlineNotifications, closeDeadlineNotifications, clearLegacyNotificationHistory } from './notifications';
+import { listenForSessionEvents } from './sessionEvents';
 import Auth from './pages/Auth';
 import Dashboard from './pages/Dashboard';
 import Classes from './pages/Classes';
@@ -37,6 +39,52 @@ function TabIcon({ name }: { name: TabIconName }) {
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
+  const currentUser = useRef<User | null>(null);
+  const requestVersion = useRef(0);
+  const accountView = useRef<HTMLDivElement>(null);
+  const [checking, setChecking] = useState(true);
+  const [sessionKey, setSessionKey] = useState(0);
+  const sessionGeneration = useRef(0);
+  const verificationPending = useRef(true);
+  const hideAccount = () => {
+    verificationPending.current = true;
+    if (accountView.current) accountView.current.hidden = true;
+    document.documentElement.classList.add('session-checking');
+    setChecking(true);
+  };
+  const changeUser = (next: User | null, forceReset = false) => {
+    requestVersion.current++;
+    if (forceReset || currentUser.current?.id !== next?.id) {
+      closeDeadlineNotifications();
+      clearLegacyNotificationHistory();
+      setSessionKey(++sessionGeneration.current);
+    }
+    currentUser.current = next;
+    verificationPending.current = false;
+    setUser(next);
+    setChecking(false);
+  };
+  const recheckSession = () => {
+    hideAccount();
+    const version = ++requestVersion.current;
+    api.get<User>('/api/auth/me').then((next) => {
+      if (version === requestVersion.current) {
+        flushSync(() => changeUser(next));
+        if (accountView.current) accountView.current.hidden = false;
+        document.documentElement.classList.remove('session-checking');
+      }
+    }).catch(() => {
+      if (version === requestVersion.current) {
+        flushSync(() => changeUser(null));
+        if (accountView.current) accountView.current.hidden = false;
+        document.documentElement.classList.remove('session-checking');
+      }
+    });
+  };
+  useLayoutEffect(() => {
+    if (accountView.current) accountView.current.hidden = checking;
+    document.documentElement.classList.toggle('session-checking', checking);
+  });
   const [online, setOnline] = useState(() => navigator.onLine);
   const [emailAction] = useState(() => {
     const params = new URLSearchParams(window.location.search);
@@ -51,15 +99,38 @@ export default function App() {
       url.searchParams.delete('confirm-email');
       window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     }
-    api.get<User>('/api/auth/me').then(setUser).catch(() => setUser(null));
+    clearLegacyNotificationHistory();
+    recheckSession();
+    const sessionEvent = listenForSessionEvents((type) => {
+      if (type === 'logout') flushSync(() => changeUser(null, true));
+      else recheckSession();
+    });
+    const visibility = () => { if (document.visibilityState === 'visible') recheckSession(); else hideAccount(); };
+    window.addEventListener('focus', recheckSession);
+    window.addEventListener('blur', hideAccount);
+    document.addEventListener('visibilitychange', visibility);
     const refresh = () => setOnline(navigator.onLine);
     window.addEventListener('online', refresh);
     window.addEventListener('offline', refresh);
-    return () => { window.removeEventListener('online', refresh); window.removeEventListener('offline', refresh); };
+    return () => {
+      requestVersion.current++;
+      sessionEvent();
+      window.removeEventListener('focus', recheckSession);
+      window.removeEventListener('blur', hideAccount);
+      document.removeEventListener('visibilitychange', visibility);
+      window.removeEventListener('online', refresh);
+      window.removeEventListener('offline', refresh);
+      document.documentElement.classList.remove('session-checking');
+    };
   }, [emailAction]);
   if (emailAction) return <EmailAction type={emailAction.type} token={emailAction.token} />;
-  if (user === undefined) return <main><LoadingState /></main>;
-  return user ? <Shell user={user} setUser={setUser} online={online} /> : <Auth onUser={setUser} online={online} />;
+  return <>{checking && <main><LoadingState /></main>}<div ref={accountView} hidden={checking} inert={checking}>
+    {user === undefined ? null : user ? <Shell key={`${user.id}:${sessionKey}`} user={user} setUser={(next) => {
+      if (!verificationPending.current && sessionGeneration.current === sessionKey && currentUser.current?.id === user.id) changeUser(next);
+    }} online={online} sessionReady={!checking} /> : <Auth key={sessionKey} onUser={(next) => {
+      if (sessionGeneration.current === sessionKey) changeUser(next);
+    }} online={online} />}
+  </div></>;
 }
 
 function LoadingState() {
@@ -93,12 +164,12 @@ function EmailAction({ type, token }: { type: 'verify' | 'confirm-email'; token:
   </main>;
 }
 
-function Shell({ user, setUser, online }: { user: User; setUser: (user: User | null) => void; online: boolean }) {
+function Shell({ user, setUser, online, sessionReady }: { user: User; setUser: (user: User | null) => void; online: boolean; sessionReady: boolean }) {
   const [tab, setTab] = useState<Tab>('dash');
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const toastId = useRef(0);
   const store = useStore();
-  const notifications = useDeadlineNotifications(store.tasks, user.reminderDays);
+  const notifications = useDeadlineNotifications(user.id, store.tasks, user.reminderDays, sessionReady);
   const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due) < 0 || daysLeft(task.due) <= user.reminderDays)).length;
   useEffect(() => listenForToasts((message) => setToast({ id: ++toastId.current, message })), []);
   useEffect(() => {

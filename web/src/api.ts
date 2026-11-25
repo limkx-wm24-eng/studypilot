@@ -1,3 +1,5 @@
+import { publishSessionEvent } from './sessionEvents';
+
 export const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
 export const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'] as const;
 export const STATUSES = ['Not started', 'In progress', 'Complete'] as const;
@@ -44,6 +46,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   const authTransition =
     (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path)) ||
     (method === 'DELETE' && path === '/api/auth/me');
+  if (authTransition) publishSessionEvent(path === '/api/auth/logout' || method === 'DELETE' ? 'logout' : 'changed');
   if (authTransition && typeof caches !== 'undefined') await caches.delete('api-network-first');
   if (res.status === 204) return undefined as T;
   return data as T;

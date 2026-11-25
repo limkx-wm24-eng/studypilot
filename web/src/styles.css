@@ -449,3 +449,4 @@ p[role=status].toast{position:fixed;z-index:40;right:16px;bottom:16px;max-width:
 .import-drop{padding:24px;margin:16px 0;border:2px dashed var(--line);border-radius:var(--radius-card)}
 .import-session{margin:12px 0;padding:12px;border:1px solid var(--line);border-radius:var(--radius-control)}
 .import-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+.session-checking dialog{visibility:hidden!important}

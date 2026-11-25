@@ -134,9 +134,17 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 - These are estimates. Check them against your faculty's official rules.
 
 ## Known limits
+Logout and account changes are synchronized across tabs using BroadcastChannel with a storage-event fallback. Messages carry only an event type and random nonce, never account data. Focus and visibility checks hide the account view until the session is verified; a changed or invalid session discards the previous account state. If both browser mechanisms are blocked, focus/visibility checks still protect returning tabs.
+
+Notification deduplication history uses only the opaque user ID in its storage key. The old shared key is removed on startup and logout. The app closes notifications it created when an account is cleared, where the browser API permits; the operating system's notification history is outside the app's control.
+
 - Authentication rate limits count five failed attempts per email and IP in a rolling 15-minute window. The in-memory counters reset on server restart and are not shared between server instances.
 - Reset and email-verification token consumption each allow ten attempts per IP per 15 minutes, including malformed requests. Limited requests return 429 with `Retry-After`.
 - Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
+
+## Known dev-tooling audit findings
+
+The production-only audits report **0 production findings**. After the approved Vite 8.3.3, fast-uri 3.1.9 and serialize-javascript 7.1.3 patch updates, the web audit still reports four moderate dev-only findings: glob, minimatch, and their workbox-build / vite-plugin-pwa dependency chain. These tools run during development/builds, not in the deployed Express runtime. Fixing the remaining chain requires versions outside the current parent ranges or an incompatible plugin downgrade; those changes have not been applied or approved. No forced audit fix or major override was used.
 
 ## Roadmap
 - [x] Accounts and per-user data
