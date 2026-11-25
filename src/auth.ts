@@ -2,7 +2,7 @@ import type { Express, NextFunction, Request, Response } from 'express';
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { type Database, type DbRow, type DbValue } from './db.js';
-import { createMailer, type Mailer } from './mailer.js';
+import { createMailer, emailEnabled, EMAIL_UNAVAILABLE, type Mailer } from './mailer.js';
 
 const COOKIE = 'sp_session';
 const SESSION_DAYS = 14;
@@ -246,12 +246,12 @@ export function authRoutes(
     if (!limited) {
       const retryAfter = failures.recordFailure(email, ip, Date.now());
       if (retryAfter !== undefined) {
-        res.status(200).json({ message: FORGOT_MESSAGE });
+        res.status(200).json({ message: emailEnabled(mailer) ? FORGOT_MESSAGE : EMAIL_UNAVAILABLE });
         return;
       }
     }
-    res.status(200).json({ message: FORGOT_MESSAGE });
-    if (parsed.success && !limited) {
+    res.status(200).json({ message: emailEnabled(mailer) ? FORGOT_MESSAGE : EMAIL_UNAVAILABLE });
+    if (emailEnabled(mailer) && parsed.success && !limited) {
       sendInBackground(() => sendResetEmail(parsed.data.email), 'process password reset email');
     }
   });
@@ -305,7 +305,13 @@ export function authRoutes(
     res.json({ message: 'Email verified.' });
   });
 
-  app.post('/api/auth/resend-verification', requireUser, async (_req, res) => {
+  app.post('/api/auth/resend-verification', (req, res, next) => {
+    if (emailEnabled(mailer)) return next();
+    // Do not inspect accounts or sessions when nothing can be delivered.
+    const retryAfter = recordResend(`disabled:${getClientIp(req)}`, Date.now());
+    if (retryAfter !== undefined) res.set('Retry-After', String(retryAfter));
+    res.status(retryAfter === undefined ? 202 : 429).json({ message: EMAIL_UNAVAILABLE });
+  }, requireUser, async (_req, res) => {
     const userId = String(res.locals.userId);
     const user = await db.get('SELECT email, email_verified_at FROM users WHERE id = ?', [userId]);
     if (!user) return void res.status(401).json({ error: 'Please log in' });
@@ -377,7 +383,7 @@ export function authRoutes(
       return failAuthentication(res, email, ip, 409, 'That email is already registered');
     }
     failures.clearEmail(email);
-    const verificationToken = await createAuthToken(id, 'verify');
+    const verificationToken = emailEnabled(mailer) ? await createAuthToken(id, 'verify') : undefined;
     await startSession(res, id);
     res.status(201).json(await getProfile(id));
     if (verificationToken) sendInBackground(() => sendLinkEmail(parsed.data.email, 'verify', verificationToken), 'send email verification message');
@@ -404,6 +410,7 @@ export function authRoutes(
   });
   app.get('/api/auth/me', requireUser, async (_req, res) => { res.json(await getProfile(res.locals.userId)); });
   app.patch('/api/auth/email', requireUser, async (req, res) => {
+    if (!emailEnabled(mailer)) return void res.status(503).json({ error: EMAIL_UNAVAILABLE });
     const parsed = emailChangeBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'Enter a valid email and password' });
 

@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { authRoutes, makeRequireUser } from './auth.js';
 import { type Database, type DbRow, type DbValue } from './db.js';
-import { createMailer, type Mailer } from './mailer.js';
+import { createMailer, emailEnabled, type Mailer } from './mailer.js';
 import { timetableRoutes } from './timetable.js';
 import { className } from './classSchema.js';
 import { timetableImportRoutes } from './timetableImport.js';
@@ -71,6 +71,7 @@ export function createApp(db: Database, options: { mailer?: Mailer } = {}) {
   };
 
   app.get('/api/health', (_req, res) => { res.json({ ok: true }); });
+  app.get('/api/config', (_req, res) => { res.json({ emailEnabled: emailEnabled(mailer) }); });
   authRoutes(app, db, { mailer });
   const auth = makeRequireUser(db);
   app.use('/api/classes', auth);

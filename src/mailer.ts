@@ -1,10 +1,16 @@
 export type Email = { to: string; subject: string; text: string };
 
 export interface Mailer {
+  readonly enabled?: boolean;
   send(email: Email): Promise<void>;
 }
 
+// Custom/fake senders remain enabled unless they explicitly report otherwise.
+export const emailEnabled = (mailer: Mailer) => mailer.enabled !== false;
+export const EMAIL_UNAVAILABLE = 'Email is not set up on this demo, so this is unavailable.';
+
 export class ConsoleMailer implements Mailer {
+  get enabled() { return !process.env.NODE_ENV || process.env.NODE_ENV === 'development'; }
   async send(email: Email): Promise<void> {
     if (process.env.NODE_ENV && process.env.NODE_ENV !== 'development') return;
     for (const link of email.text.match(/https?:\/\/[^\s]+/g) ?? []) {
@@ -35,7 +41,8 @@ export class BrevoMailer implements Mailer {
   }
 }
 
-class DisabledMailer implements Mailer {
+export class DisabledMailer implements Mailer {
+  readonly enabled = false;
   async send(_email: Email): Promise<void> {}
 }
 

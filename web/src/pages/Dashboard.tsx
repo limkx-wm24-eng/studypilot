@@ -3,9 +3,11 @@ import type { Store } from '../store';
 import { daysLeft, dueText, type Tab } from '../util';
 import { api } from '../api';
 import { currentSemester, isoToday, phase } from '../calendar';
+import { useEmailAvailability } from '../emailAvailability';
 
 type Props = Pick<Store, 'classes' | 'tasks' | 'slots' | 'patchTask'> & { name: string; reminderDays: number; emailVerified: boolean; go: (tab: Tab) => void };
 export default function Dashboard({ name, classes, tasks, slots, patchTask, reminderDays, emailVerified, go }: Props) {
+  const { emailEnabled, notice } = useEmailAvailability();
   const [verificationMessage, setVerificationMessage] = useState('');
   const [verificationError, setVerificationError] = useState('');
   const [resending, setResending] = useState(false);
@@ -33,10 +35,12 @@ export default function Dashboard({ name, classes, tasks, slots, patchTask, remi
   return <>
     <section className="dashboard-hero"><div><p className="eyebrow">Your study overview</p>{name && <h2>Hi, {name}</h2>}<p className="mut">{new Date(`${isoToday()}T00:00:00`).toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p></div>{semester && <span className="semester-chip">{semester.name} · {phase(semester, isoToday())}</span>}</section>
     {!emailVerified && <section className="offline-banner" aria-label="Email verification">
+      {emailEnabled === true ? <>
       <b>Please verify your email</b>{' '}
       <button className="link" disabled={resending} onClick={resendVerification}>{resending ? 'Sending…' : 'Resend'}</button>
       {verificationMessage && <p role="status">{verificationMessage}</p>}
       {verificationError && <p role="alert">{verificationError}</p>}
+      </> : <p role="status">{emailEnabled === false ? 'Email verification is unavailable on this demo' : notice}</p>}
     </section>}
     {steps.some(([, done]) => !done) && <section className="note"><b>Getting started</b><ol>{steps.map(([label, done, to]) => <li key={label} className={done ? 'done' : ''}>{done ? 'Done: ' : ''}<button className="link" onClick={() => go(to)}>{label}</button></li>)}</ol></section>}
     <div className="stats"><div className="stat-card"><b>{open.length}</b><span>open tasks</span></div><div className="stat-card accent-warning"><b>{thisWeek}</b><span>due in 7 days</span></div><div className="stat-card accent-danger"><b className={overdue ? 'bad' : ''}>{overdue}</b><span>overdue</span></div><div className="stat-card accent-success"><b>{pct}%</b><span>completed</span></div></div>

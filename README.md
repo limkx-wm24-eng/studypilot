@@ -70,12 +70,22 @@ Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to
 
 Existing SQLite databases are migrated automatically on startup.
 
-## Email setup
+## Email
+Email verification, password reset and the Brevo HTTPS sender are built and tested with fake mail delivery. Real delivery has not been tested. The live demo intentionally runs with email off: the free providers considered require organization details or a verified domain. Render's free tier blocks SMTP, so this project supports an HTTPS email API instead.
+
+With no production `MAIL_API_KEY`, `/api/config` returns only `{ "emailEnabled": false }`. Accounts and study features remain usable without verification. Forgot-password sending, verification resend and initiating an email change are unavailable; the UI explains why instead of promising mail. Registration, forgot-password and resend create no unsendable tokens. Already-issued, valid links can still be consumed. Forgot-password and resend give the same disabled message regardless of the submitted email; rate limits remain in force.
+
+The UI fetches this public flag once per page load and keeps it in memory only. It is never written to browser storage or cached by the service worker.
+
+Verification resend retains its one-minute cooldown and five-per-day limit. With email enabled these limits are per user; with email disabled they are per IP, so the response does not depend on an account lookup. Forgot-password throttling and existing token-consumption limits remain unchanged.
+
+To enable delivery later, configure `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM` (an authorized sender address) and `APP_URL` (the app's public HTTPS URL), then restart the service and reload the app. Do not put keys in source control. Availability reports configuration, not proof of successful provider delivery. No provider or domain setup is required for the demo.
+
 When running the Vite development server, set `APP_URL=http://localhost:5173` so local token links open the running frontend. Reset and verification emails are implemented; the console provider prints only their links, never recipient details.
 
 Password-reset links expire after **30 minutes**; verification links expire after **24 hours**. Reset tokens are single-use, and resetting a password revokes existing sessions. Console email output is disabled when `NODE_ENV=production`, including mailers constructed before the environment changes. Production never falls back to development token links.
 
-For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (or unset); usable token links print only to your local API console, without recipient information. Console links are suppressed in test and production modes. To send email, create a Brevo API key, verify a sender address, then set `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM`, and `APP_URL` (the public base URL of the app). Keep `MAIL_API_KEY` private. If the production key is missing, password reset email delivery stays disabled and the server logs one warning.
+For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (or unset); usable token links print only to your local API console, without recipient information. Console links are suppressed in test and production modes. If the production key is missing, email stays disabled and the server logs one warning. Keep `MAIL_API_KEY` private.
 
 ## Deploy
 

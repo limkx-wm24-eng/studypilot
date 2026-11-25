@@ -1,9 +1,12 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { api, type User } from '../api';
+import { useEmailAvailability } from '../emailAvailability';
 
 type View = 'login' | 'register' | 'forgot';
 
 export default function Auth({ onUser, online }: { onUser: (u: User) => void; online: boolean }) {
+  const { emailEnabled, notice } = useEmailAvailability();
+  const [forgotMessage, setForgotMessage] = useState('');
   const [view, setView] = useState<View>('login');
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
@@ -36,9 +39,11 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
 
   const requestReset = async (event: FormEvent) => {
     event.preventDefault();
+    if (emailEnabled !== true) return;
     setError('');
     try {
-      await api.post('/api/auth/forgot', { email: forgotEmail });
+      const result = await api.post<{ message: string }>('/api/auth/forgot', { email: forgotEmail });
+      setForgotMessage(result.message);
       setForgotSent(true);
     } catch (err) { setError((err as Error).message); }
   };
@@ -83,8 +88,8 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
         <p role="status">Password updated.</p>
         <button className="link" onClick={() => { setResetComplete(false); setView('login'); }}>Log in</button>
       </> : view === 'forgot' ? <>
-        <p className="hint">Enter the email address for your account.</p>
-        {forgotSent ? <p role="status">If an account exists for that email, we sent a reset link.</p> : <fieldset className="app-content" disabled={!online}><form className="stack" onSubmit={requestReset}>
+        {emailEnabled === true ? <p className="hint">Enter the email address for your account.</p> : <p role="status">{emailEnabled === false ? 'Email is not set up on this demo, so password reset is unavailable.' : notice}</p>}
+        {forgotSent ? <p role="status">{forgotMessage}</p> : <fieldset className="app-content" disabled={!online || emailEnabled !== true}><form className="stack" onSubmit={requestReset}>
           <label>Email<input type="email" required autoComplete="email" value={forgotEmail} onChange={(event) => setForgotEmail(event.target.value)} /></label>
           {error && <p className="bad" role="alert">{error}</p>}
           <button className="btn">Send reset link</button>

@@ -1,8 +1,10 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { api, COURSE_TYPES, type User } from '../api';
+import { useEmailAvailability } from '../emailAvailability';
 
 type Permission = NotificationPermission | 'unsupported';
 export default function Profile({ user, setUser, permission, requestNotifications }: { user: User; setUser: (u: User | null) => void; permission: Permission; requestNotifications: () => Promise<void> }) {
+  const { emailEnabled, notice } = useEmailAvailability();
   const [form, setForm] = useState({ name: user.name, courseType: user.courseType, programme: user.programme, reminderDays: user.reminderDays });
   const [msg, setMsg] = useState('');
   const [newEmail, setNewEmail] = useState('');
@@ -47,13 +49,14 @@ export default function Profile({ user, setUser, permission, requestNotification
   <section className="notification-setting">
     <h2>Account email</h2>
     <p>Current email: <b>{user.email}</b></p>
-    <p>Email verification: <b>{user.emailVerified ? 'Verified' : 'Not verified'}</b></p>
-    {pendingEmail && <p role="status">Confirmation sent to {pendingEmail}.</p>}
-    <form className="row account-email-form" onSubmit={changeEmail}>
+    {emailEnabled === true ? <p>Email verification: <b>{user.emailVerified ? 'Verified' : 'Not verified'}</b></p> : <p role="status">{emailEnabled === false ? 'Email verification is unavailable on this demo' : notice}</p>}
+    {emailEnabled === true && pendingEmail && <p role="status">Confirmation sent to {pendingEmail}.</p>}
+    {emailEnabled === false && <p>Changing email is unavailable because it requires an email confirmation.</p>}
+    {emailEnabled === true && <form className="row account-email-form" onSubmit={changeEmail}>
       <label>New email<input type="email" autoComplete="email" required value={newEmail} onChange={(event) => setNewEmail(event.target.value)} /></label>
       <label>Current password<input type="password" autoComplete="current-password" required value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
       <button className="btn">Change email</button>
-    </form>
+    </form>}
     {emailError && <p className="bad" role="alert">{emailError}</p>}
     {emailStatus && <p role="status">{emailStatus}</p>}
   </section>
