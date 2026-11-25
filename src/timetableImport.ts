@@ -4,15 +4,16 @@ import { z } from 'zod';
 import type { Database } from './db.js';
 import { className, CLASS_PALETTE } from './classSchema.js';
 import { slotFields, validSlotOrder } from './timetable.js';
+import { withUserTransaction } from './userTransaction.js';
 
 const body = z.object({
   classes: z.array(z.object({ name: className })).default([]),
   slots: z.array(slotFields.extend({ className }).refine(validSlotOrder, { message: 'The end time must be after the start time' })).max(200),
 }).refine((data) => new Set([...data.classes.map((c) => c.name.toLowerCase()), ...data.slots.map((s) => s.className.toLowerCase())]).size <= 40,
   { message: 'Import at most 40 distinct classes' });
-type Conflict = { row: number; with: number | 'existing' };
+type Conflict = { row: number; with: number | 'existing'; reason?: 'metadata'; fields?: string[]; existing?: { kind: string; room: string }; incoming?: { kind: string; room: string } };
 class ImportConflict extends Error {
-  constructor(readonly conflicts: Conflict[]) { super('Some sessions overlap. Review the highlighted rows.'); }
+  constructor(readonly conflicts: Conflict[]) { super(conflicts.some((conflict) => conflict.reason === 'metadata') ? 'Session type or room conflicts with another session. Review the highlighted rows.' : 'Some sessions overlap. Review the highlighted rows.'); }
 }
 
 export function timetableImportRoutes(app: Express, db: Database, auth: RequestHandler) {
@@ -29,22 +30,25 @@ export function timetableImportRoutes(app: Express, db: Database, auth: RequestH
     const parsed = body.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'Check the classes, days and times', errors: parsed.error.issues });
     try {
-      const result = await db.transaction(async (tx) => {
-        // Serialize imports for this user on PostgreSQL; SQLite transactions already serialize writers.
-        await tx.run('UPDATE users SET id = id WHERE id = ?', [userId]);
+      const result = await withUserTransaction(db, userId, async (tx) => {
         const classes = await tx.all('SELECT id, name FROM classes WHERE user_id = ? ORDER BY created_at, id', [userId]);
         const names = new Map(classes.map((c) => [String(c.name).toLowerCase(), String(c.id)]));
         const existing = await tx.all('SELECT s.*, c.name FROM slots s JOIN classes c ON c.id = s.class_id WHERE c.user_id = ?', [userId]);
-        const seen = existing.map((s) => ({ name: String(s.name).toLowerCase(), weekday: Number(s.weekday), start: String(s.start_time), end: String(s.end_time), row: 0 }));
+        const seen = existing.map((s) => ({ name: String(s.name).toLowerCase(), weekday: Number(s.weekday), start: String(s.start_time), end: String(s.end_time), kind: String(s.kind), room: String(s.room).trim(), row: 0 }));
         const additions: typeof parsed.data.slots = [];
         const conflicts: Conflict[] = [];
         let skipped = 0;
         parsed.data.slots.forEach((slot, index) => {
           const name = slot.className.toLowerCase();
-          if (seen.some((s) => s.name === name && s.weekday === slot.weekday && s.start === slot.start && s.end === slot.end)) { skipped++; return; }
+          const identicalTime = seen.find((s) => s.name === name && s.weekday === slot.weekday && s.start === slot.start && s.end === slot.end);
+          if (identicalTime) {
+            if (identicalTime.kind === slot.kind && identicalTime.room === slot.room) { skipped++; return; }
+            conflicts.push({ row: index + 1, with: identicalTime.row || 'existing', reason: 'metadata', fields: ['kind', 'room'].filter((field) => identicalTime[field as 'kind' | 'room'] !== slot[field as 'kind' | 'room']), existing: { kind: identicalTime.kind, room: identicalTime.room }, incoming: { kind: slot.kind, room: slot.room } });
+            return;
+          }
           for (const other of seen) if (other.weekday === slot.weekday && slot.start < other.end && slot.end > other.start)
             conflicts.push({ row: index + 1, with: other.row || 'existing' });
-          seen.push({ name, weekday: slot.weekday, start: slot.start, end: slot.end, row: index + 1 });
+          seen.push({ name, weekday: slot.weekday, start: slot.start, end: slot.end, kind: slot.kind, room: slot.room, row: index + 1 });
           additions.push(slot);
         });
         if (conflicts.length) throw new ImportConflict(conflicts);

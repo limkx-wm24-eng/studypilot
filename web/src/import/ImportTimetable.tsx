@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError, KINDS, type Klass, type Slot, type User } from '../api';
 import { showToast } from '../toast';
-import { findOverlaps, parseTimetableText, type ParsedSlot, type ParsedTimetable } from './timetableImport';
+import { findOverlaps, parseTimetableText, MAX_TIMETABLE_TEXT_LENGTH, TIMETABLE_TEXT_LIMIT_HELP, type ParsedSlot, type ParsedTimetable } from './timetableImport';
 import { extractPdfText, PDF_ERROR_HELP, PdfImportError } from './pdfText';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -18,7 +18,7 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
   const [semester, setSemester] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  const [serverErrors, setServerErrors] = useState<number[]>([]);
+  const [serverErrors, setServerErrors] = useState<Record<number, string>>({});
   const alive = useRef(true);
   useLayoutEffect(() => {
     alive.current = true;
@@ -26,13 +26,15 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
     element?.showModal();
     return () => { alive.current = false; element?.close(); };
   }, []);
-  const already = (row: ParsedSlot) => slots.some((s) => classes.find((c) => c.id === s.classId)?.name.toLowerCase() === row.className.trim().toLowerCase() && s.weekday === row.weekday && s.start === row.start && s.end === row.end);
+  const sameTime = (s: Slot, row: ParsedSlot) => classes.find((c) => c.id === s.classId)?.name.toLowerCase() === row.className.trim().toLowerCase() && s.weekday === row.weekday && s.start === row.start && s.end === row.end;
+  const already = (row: ParsedSlot) => slots.some((s) => sameTime(s, row) && s.kind === row.kind && s.room.trim() === row.room.trim());
   const load = (value: string) => {
+    if (value.length > MAX_TIMETABLE_TEXT_LENGTH) { setMessage(TIMETABLE_TEXT_LIMIT_HELP); return; }
     const result = parseTimetableText(value, { maxNameLength: 60 });
     setParsed(result); setNames(Object.fromEntries(result.courses.map((c) => [c.code, c.className])));
     setRows(result.slots.map((s) => ({ ...s, included: !already(s) })));
     setProjects(result.courses.filter((c) => c.noClass).map((c) => c.code));
-    setServerErrors([]); setMessage('');
+    setServerErrors({}); setMessage('');
   };
   const read = async (file?: File) => {
     if (!file || busy) return;
@@ -52,8 +54,10 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
     if (!KINDS.includes(r.kind)) out.push('Choose a session type.');
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(r.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(r.end) || r.end <= r.start) out.push('End must be after start, using valid times.');
     if (r.room.length > 30) out.push('Room must have at most 30 characters.');
-    if (!already(r) && slots.some((s) => s.weekday === r.weekday && r.start < s.end && r.end > s.start)) out.push('Overlaps an existing session.');
-    if (serverErrors.includes(i)) out.push('The server found an overlap. Edit or uncheck this row.');
+    const metadataConflict = slots.find((s) => sameTime(s, r) && (s.kind !== r.kind || s.room.trim() !== r.room.trim()));
+    if (metadataConflict) out.push(`Metadata conflict: existing ${metadataConflict.kind}, room ${metadataConflict.room || '(not supplied)'}; proposed ${r.kind}, room ${r.room || '(not supplied)'}. Edit or uncheck this row.`);
+    else if (!already(r) && slots.some((s) => s.weekday === r.weekday && r.start < s.end && r.end > s.start)) out.push('Overlaps an existing session.');
+    if (serverErrors[i]) out.push(serverErrors[i]);
     return out;
   });
   for (const [a, b] of findOverlaps(selected.map(({ r }) => r))) {
@@ -63,7 +67,7 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
   const classCount = new Set([...selected.map(({ r }) => r.className.toLowerCase()), ...projectNames.map((name) => name.toLowerCase())]).size;
   const invalid = selected.some(({ i }) => errors[i].length) || projectNames.some((name) => !name || name.length > 60) || selected.length > 200 || classCount > 40;
   const weeks = parsed?.courseType === 'SHORT' ? 7 : parsed?.courseType === 'LONG' ? 14 : parsed?.semesterStart && parsed.semesterEnd && (Date.parse(parsed.semesterEnd) - Date.parse(parsed.semesterStart)) / 86400000 < 60 ? 7 : 14;
-  const update = (index: number, patch: Partial<Row>) => { setRows(rows.map((r, i) => i === index ? { ...r, ...patch } : r)); setServerErrors([]); };
+  const update = (index: number, patch: Partial<Row>) => { setRows(rows.map((r, i) => i === index ? { ...r, ...patch } : r)); setServerErrors({}); };
   const confirm = async () => {
     if (invalid || busy) return;
     setBusy(true); setMessage('');
@@ -82,7 +86,16 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
       showToast(`Imported ${result.createdClasses} classes and ${result.createdSlots} sessions.${notice}`);
       onClose();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 409) setServerErrors(error.conflicts.flatMap((c) => [selected[c.row - 1]?.i, typeof c.with === 'number' ? selected[c.with - 1]?.i : undefined]).filter((i): i is number => i !== undefined));
+      if (error instanceof ApiError && error.status === 409) {
+        const issues: Record<number, string> = {};
+        for (const conflict of error.conflicts) {
+          const message = conflict.reason === 'metadata' && conflict.existing && conflict.incoming
+            ? `Metadata conflict: ${conflict.existing.kind}, room ${conflict.existing.room || '(not supplied)'} versus ${conflict.incoming.kind}, room ${conflict.incoming.room || '(not supplied)'}. Edit or uncheck this row.`
+            : 'The server found an overlap. Edit or uncheck this row.';
+          for (const index of [selected[conflict.row - 1]?.i, typeof conflict.with === 'number' ? selected[conflict.with - 1]?.i : undefined]) if (index !== undefined) issues[index] = message;
+        }
+        setServerErrors(issues);
+      }
       setMessage(error instanceof Error ? error.message : 'Import failed. Please try again.');
     } finally { setBusy(false); }
   };
@@ -110,13 +123,22 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
       }}>{label}</button>)}</div>
       <div id="import-source-panel" role="tabpanel" aria-labelledby={`import-source-${tab === 'PDF' ? 0 : 1}`}>
       {tab === 'PDF' ? <div className="import-drop" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void read(event.dataTransfer.files[0]); }}><label>Choose PDF<input type="file" accept="application/pdf,.pdf" disabled={busy} onChange={(event) => { void read(event.target.files?.[0]); event.target.value = ''; }} /></label><p>Or drag and drop a PDF here.</p></div>
-        : <><label>Semester Timetable By Course text<textarea rows={8} value={text} disabled={busy} onChange={(e) => setText(e.target.value)} /></label><button className="btn" disabled={busy || !text.trim()} onClick={() => load(text)}>Review timetable</button></>}
+        : <><label>Semester Timetable By Course text<textarea rows={8} maxLength={MAX_TIMETABLE_TEXT_LENGTH} value={text} disabled={busy} onPaste={(event) => {
+          const input = event.currentTarget;
+          const pasted = event.clipboardData.getData('text');
+          if (text.length - (input.selectionEnd - input.selectionStart) + pasted.length > MAX_TIMETABLE_TEXT_LENGTH) {
+            event.preventDefault(); setMessage(TIMETABLE_TEXT_LIMIT_HELP);
+          }
+        }} onChange={(e) => {
+          if (e.target.value.length > MAX_TIMETABLE_TEXT_LENGTH) { setMessage(TIMETABLE_TEXT_LIMIT_HELP); return; }
+          setText(e.target.value); setMessage('');
+        }} /></label><p>Maximum 200,000 characters, for pasted text or text read from a PDF.</p><button className="btn" disabled={busy || !text.trim()} onClick={() => load(text)}>Review timetable</button></>}
       </div>
     </> : <>
       <h3>Review timetable</h3><p>{parsed.courses.length} classes, {rows.length} sessions</p>
       {parsed.problems.map((p, i) => <p key={i} role="status">⚠ {p}</p>)}
       {parsed.courses.filter((c) => !c.noClass).map((course) => <section key={course.code}>
-        <label>Class name for {course.code}<input maxLength={60} value={names[course.code] ?? ''} disabled={busy} onChange={(e) => { setNames({ ...names, [course.code]: e.target.value }); setServerErrors([]); }} /></label>
+        <label>Class name for {course.code}<input maxLength={60} value={names[course.code] ?? ''} disabled={busy} onChange={(e) => { setNames({ ...names, [course.code]: e.target.value }); setServerErrors({}); }} /></label>
         {edited.map((row, i) => row.courseCode !== course.code ? null : <fieldset key={i} className="import-session" disabled={busy}>
           <legend>Session {i + 1}</legend>
           <label><input type="checkbox" checked={row.included} onChange={(e) => update(i, { included: e.target.checked })} />Include session {i + 1}</label>

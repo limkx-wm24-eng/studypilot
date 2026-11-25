@@ -23,6 +23,8 @@ Your PDF is read in your browser and never uploaded. Only the classes and sessio
 
 Limits: 10 MB, 20 PDF pages, 40 classes and 200 sessions per import. Everything is imported as weekly. Image-only PDFs need re-saving with a text layer or pasting the table; OCR is not supported. Identical sessions are skipped and overlapping sessions must be fixed or unchecked.
 
+Pasted text and text extracted from a PDF are limited to 200,000 characters. Before overlap checks, the parser also rejects more than 60 courses or 400 sessions; the smaller 40-class and 200-session limits still apply when confirming an import.
+
 ## Stack
 - **Frontend:** React 19 + TypeScript + Vite (`web/`)
 - **API:** Node.js + Express 5 + TypeScript, zod request validation (`src/`)
@@ -59,7 +61,7 @@ npm start
 
 PostgreSQL verification is opt-in. Set `TEST_DATABASE_URL` explicitly to a disposable PostgreSQL database whose name contains `test`, then run `npm run test:pg`. The command never falls back to `DATABASE_URL`, refuses missing or non-test URLs, and never prints connection strings. It allows only the `sslmode` URL query parameter. The database role needs permission to create schemas.
 
-The runner applies every migration in fresh, empty, isolated schemas, tests migration 010 against existing synthetic classes, slots, tasks and attendance, then runs the import API tests on PostgreSQL. It removes only the schemas it creates. The SQLite suite checks the same populated migration and foreign-key behavior. Migration 010 uses SQLite triggers, so no classes-table rebuild is needed. A separate CI job runs the PostgreSQL checks against a fresh PostgreSQL service container.
+The runner applies every migration in fresh, empty, isolated schemas, tests migration 010 against existing synthetic classes, slots, tasks and attendance, then runs the import API and security regression tests on PostgreSQL. It removes only the schemas it creates. The SQLite suite checks the same populated migration and foreign-key behavior. Migration 010 uses SQLite triggers, so no classes-table rebuild is needed. A separate CI job runs the PostgreSQL checks against a fresh PostgreSQL service container.
 
 Build and run the Docker image:
 ```bash
@@ -125,6 +127,15 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 | GET | `/api/attendance/summary` | Per-class allowance: hours you can still miss, attendance so far |
 
 ## Attendance rules
+
+Dates supplied for task deadlines, semester starts and attendance (including attendance query bounds) must be real Gregorian `YYYY-MM-DD` dates; impossible dates return `400` without writes. The optional semester start can still be cleared with `""`. Valid date strings retain their exact date without timezone conversion; existing invalid stored records are not rewritten.
+
+Timetable creation and imports perform their authoritative overlap checks and writes in one transaction. They acquire the same user-row lock before reading timetable/class data. PostgreSQL holds this database lock across connections and app instances, independently for each user; SQLite uses its existing queued shared connection and `BEGIN IMMEDIATE` single-writer transaction. Class renames/deletions and slot deletions coordinate with imports through the same lock. Transactions commit before responses and roll back/release locks on errors. Ordinary overlaps still return `409`, while adjacent sessions remain allowed.
+
+Imports deduplicate only exact sessions: case-insensitive class name, day, start/end, session type and trimmed room must agree. Identical re-imports still count as skipped. Same scheduling identity with different type or room returns `409` with `{ error, conflicts }`; metadata entries add `reason: "metadata"`, `fields` (`kind` and/or `room`), and `existing`/`incoming` objects containing those values. `row` is 1-based; `with` is a 1-based payload row or `"existing"`. Ordinary overlap entries keep their existing `{ row, with }` shape. No part of a conflicting import is committed. The preview retains conflicting source rows, identifies both sets of metadata and requires editing or excluding rows before import; it never overwrites stored metadata.
+
+PATCH on classes, tasks and courses uses an ownership-filtered atomic update returning the complete changed row. If concurrent deletion wins, PATCH returns the existing JSON `404` error; if PATCH wins, its complete snapshot remains a valid success even if deletion follows. Empty and partial patches and foreign-class `422`/missing-record `404` behavior remain supported. Frontend error handling must account for date `400`, metadata/clash `409` and missing-record `404` responses.
+
 - Present and approved leave both count as attended. Only absences use up the allowance.
 - Required attendance is 80% for Degree, Diploma and Foundation (`REQUIRED_PERCENT` in `src/timetable.ts`).
 - Semester type sets the teaching weeks: long = 14, short = 7. Allowance = 20% of (weekly class hours x teaching weeks), rounded down to whole hours.
@@ -133,12 +144,42 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 - An optional semester start date limits the log to that semester (from the start date for the number of teaching weeks), so old semesters do not count.
 - These are estimates. Check them against your faculty's official rules.
 
+## Security notes
+
+Registration intentionally returns 409 for an existing email, which reveals whether an account exists; concealing registration would require an email-based flow, and email is disabled on the demo.
+
+Passwords use asynchronous scrypt with random 16-byte salts and 64-byte derived keys. New records contain `scrypt$v1$N=16384,r=8,p=1$<salt>$<key>`. The version defines the salt/key lengths; the record stores the cost parameters. Legacy `salt:key` records continue verifying with their original N=16384/r=8/p=1 settings and are upgraded to the versioned format after a successful login. Supported older v1 N=8192/r=8/p=1 records are also upgraded. Unsupported versions/costs are rejected before allocation; upgrades never replace a concurrently reset password or downgrade a supported stronger record.
+
+The selected policy deliberately retains the legacy cost: increasing it did not consistently meet the local 300 ms login budget. The estimated scrypt working buffers are **16.003 MiB per operation**, below the 32 MiB budget; `maxmem=34 MiB` is an allocation ceiling allowing overhead, not a measurement of usage. Node/process overhead is additional. One process-wide queue permits **two active operations and eight waiting** across registration, verification, dummy work, resets and upgrades. Saturation returns generic 503 with `Retry-After: 1`; reset tokens and sessions remain intact. Queueing delays and upgrade work can exceed 300 ms.
+
+Candidate raw-hash medians measured locally (three measured samples after warm-up; machine load varied between passes):
+
+| N | r | p | Observed median range (ms) | Estimated buffers (MiB) |
+|---|---|---|---|---|
+| 16384 | 8 | 1 | 46–209 | 16.003 |
+| 16384 | 8 | 2 | 424 | 16.004 |
+| 16384 | 8 | 3 | 137–620 | 16.005 |
+| 16384 | 8 | 4 | 841 | 16.006 |
+| 16384 | 8 | 5 | 220–527 | 16.007 |
+| 16384 | 8 | 6 | 265–594 | 16.008 |
+| 16384 | 8 | 7 | 541–802 | 16.009 |
+| 16384 | 8 | 8 | 348–980 | 16.010 |
+| 32768 | 8 | 2 | 181–502 | 32.004 |
+| 32768 | 8 | 3 | 268–689 | 32.005 |
+| 32768 | 8 | 4 | 358–967 | 32.006 |
+
+Larger-N candidates exceed the strict 32 MiB estimated-buffer budget once overhead is included. Stronger candidates sometimes ran below 300 ms but failed that target in later measurements; no stronger measured r=8 profile stayed within both budgets. With the selected policy, the final in-memory SQLite HTTP benchmark measured normal login at **159 ms median (137–182 ms)** and legacy upgrade at **390 ms (322–406 ms)**. Current/legacy/unknown failed-login medians were 184/180/173 ms. These local measurements are not a production guarantee. Run `node --import tsx scripts/benchmark-passwords.ts` (or add `--shortlist`) and `node --import tsx scripts/benchmark-auth.ts` to repeat them with synthetic inputs; neither prints passwords or hashes.
+
+This policy **does not meet OWASP's listed scrypt minimum**: its closest same-memory recommendation is N=16384/r=8/p=5, versus our p=1. That difference is a cost-setting shortfall, not a claim that password resistance scales linearly. See [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt). The choice favors the measured latency/resource limits on a CPU-constrained, approximately 512 MB Render instance; Render performance has not been measured. Before raising the policy, repeat the benchmark and revisit the latency budget or hosting resources. The explicit version/parameters allow a later upgrade.
+
+Legacy/current/unknown login failures perform the same supported scrypt profile; older N=8192 records receive bounded dummy work to reduce timing differences. This does not promise identical wall-clock timing over a network.
+
 ## Known limits
 Logout and account changes are synchronized across tabs using BroadcastChannel with a storage-event fallback. Messages carry only an event type and random nonce, never account data. Focus and visibility checks hide the account view until the session is verified; a changed or invalid session discards the previous account state. If both browser mechanisms are blocked, focus/visibility checks still protect returning tabs.
 
 Notification deduplication history uses only the opaque user ID in its storage key. The old shared key is removed on startup and logout. The app closes notifications it created when an account is cleared, where the browser API permits; the operating system's notification history is outside the app's control.
 
-- Authentication rate limits count five failed attempts per email and IP in a rolling 15-minute window. The in-memory counters reset on server restart and are not shared between server instances.
+- Login limits count five failed attempts per normalized email/IP pair and 30 per IP across emails in a rolling 15-minute window. A successful login clears only its own pair, preserving aggregate and other-client counters. In-flight attempts reserve capacity; temporary saturation returns 429 with `Retry-After: 1`, while actual lockouts report their remaining window. Pair/IP maps each retain at most 4,096 keys; capacity pressure rejects new keys with 429 and `Retry-After: 60` rather than evicting active limits. Idle expired entries are reclaimed. Registration, forgot-password and email-change checks retain their separate existing throttling and responses. These counters are in memory, per instance, and reset on every restart/deploy; they are not distributed. IP protection depends on trustworthy resolved client IPs; live Render forwarding behavior remains unverified.
 - Reset and email-verification token consumption each allow ten attempts per IP per 15 minutes, including malformed requests. Limited requests return 429 with `Retry-After`.
 - Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
 

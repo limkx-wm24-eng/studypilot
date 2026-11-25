@@ -440,7 +440,7 @@ test('remember me controls persistent login cookies', async () => {
   assert.match(rememberedLogin.headers.getSetCookie()[0], /max-age=1209600/i);
 });
 
-test('five failed login attempts lock the email and IP with Retry-After', async () => {
+test('five failed login attempts lock the email/IP pair with Retry-After', async () => {
   const address = email();
   const ip = '198.51.100.1';
   assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);

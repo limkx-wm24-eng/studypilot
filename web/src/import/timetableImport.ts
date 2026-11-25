@@ -55,7 +55,15 @@ export interface ParsedTimetable {
 export interface ParseOptions {
   /** Longest class name the app accepts. Longer names are cut with "…". */
   maxNameLength?: number;
+  maxTextLength?: number;
+  maxCourses?: number;
+  maxSessions?: number;
 }
+
+export const MAX_TIMETABLE_TEXT_LENGTH = 200_000;
+export const MAX_TIMETABLE_COURSES = 60;
+export const MAX_TIMETABLE_SESSIONS = 400;
+export const TIMETABLE_TEXT_LIMIT_HELP = 'This timetable has too much text. Use at most 200,000 characters; paste a smaller By Course table or save a smaller PDF.';
 
 const DAY_INDEX: Record<string, number> = {
   mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7,
@@ -210,7 +218,9 @@ export function findOverlaps(
 
 export function parseTimetableText(raw: string, opts: ParseOptions = {}): ParsedTimetable {
   const maxName = opts.maxNameLength ?? 60;
-  const text = flatten(raw);
+  const maxText = opts.maxTextLength ?? MAX_TIMETABLE_TEXT_LENGTH;
+  const maxCourses = opts.maxCourses ?? MAX_TIMETABLE_COURSES;
+  const maxSessions = opts.maxSessions ?? MAX_TIMETABLE_SESSIONS;
   const result: ParsedTimetable = {
     semesterCode: null,
     semesterStart: null,
@@ -220,6 +230,14 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
     slots: [],
     problems: [],
   };
+  const overLimit = (message: string) => {
+    // Never return a partial timetable that could be imported accidentally.
+    result.courses = []; result.slots = []; result.problems.push(message);
+    return result;
+  };
+  // Check raw length before flattening, regex matching or allocating parse records.
+  if (raw.length > maxText) return overLimit(`Timetable text exceeds the ${maxText.toLocaleString('en-US')}-character limit. Use a smaller By Course table.`);
+  const text = flatten(raw);
 
   if (!text) {
     result.problems.push('There is no text to read.');
@@ -248,6 +266,9 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
 
   // 1) Find the course headings and the text that belongs to each.
   const heads = findHeads(text);
+  if (new Set(heads.map((head) => head.code)).size > maxCourses) {
+    return overLimit(`Timetable exceeds the limit of ${maxCourses} courses. Use a smaller By Course table.`);
+  }
 
   if (heads.length === 0) {
     result.problems.push(
@@ -258,8 +279,9 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
 
   const seenCourse = new Set<string>();
   const seenSlot = new Set<string>();
+  const firstAtTime = new Map<string, ParsedSlot>();
 
-  heads.forEach((h, i) => {
+  for (const [i, h] of heads.entries()) {
     const className = makeClassName(h.code, h.title, maxName);
     const segEnd = i + 1 < heads.length ? heads[i + 1].start : text.length;
     const seg = text.slice(h.end, segEnd);
@@ -298,11 +320,13 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
       const room = v ? v[1].replace(/\s+/g, ' ').trim().slice(0, 30) : '';
       if (!v) warnings.push('Room not found — you can type it in.');
 
-      const key = `${h.code}|${weekday}|${start}|${end}`;
+      const identity = `${h.code}|${weekday}|${start}|${end}`;
+      const key = JSON.stringify([identity, kind, room]);
       if (seenSlot.has(key)) continue; // same session printed twice
+      if (result.slots.length >= maxSessions) return overLimit(`Timetable exceeds the limit of ${maxSessions} sessions. Use a smaller By Course table.`);
       seenSlot.add(key);
 
-      result.slots.push({
+      const row: ParsedSlot = {
         className,
         courseCode: h.code,
         kind,
@@ -312,9 +336,16 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
         room,
         warnings,
         errors,
-      });
+      };
+      const previous = firstAtTime.get(identity);
+      if (previous) {
+        const describe = (slot: ParsedSlot) => `${slot.kind}, room ${slot.room || '(not supplied)'}`;
+        const message = `Metadata conflict at ${start}-${end}: ${describe(previous)} versus ${describe(row)}. Choose one session or edit the conflicting details.`;
+        previous.warnings.push(message); row.warnings.push(message);
+      } else firstAtTime.set(identity, row);
+      result.slots.push(row);
     }
-  });
+  }
 
   for (const c of result.courses) {
     c.sessions = result.slots.filter((s) => s.courseCode === c.code).length;

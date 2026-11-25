@@ -30,7 +30,7 @@ export type ClassSummary = {
 export type Summary = { requiredPercent: number | null; weeks: number; semesterStart: string; classes: ClassSummary[] };
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly conflicts: { row: number; with: number | string }[] = []) { super(message); }
+  constructor(message: string, readonly status: number, readonly conflicts: { row: number; with: number | string; reason?: 'metadata'; fields?: string[]; existing?: { kind: string; room: string }; incoming?: { kind: string; room: string } }[] = []) { super(message); }
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
