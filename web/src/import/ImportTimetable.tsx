@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError, KINDS, type Klass, type Slot, type User } from '../api';
 import { showToast } from '../toast';
-import { findOverlaps, parseTimetableText, MAX_TIMETABLE_TEXT_LENGTH, TIMETABLE_TEXT_LIMIT_HELP, type ParsedSlot, type ParsedTimetable } from './timetableImport';
+import { findOverlaps, parseTimetableText, validTimeRange, MAX_TIMETABLE_TEXT_LENGTH, TIMETABLE_TEXT_LIMIT_HELP, type ParsedSlot, type ParsedTimetable } from './timetableImport';
 import { extractPdfText, PDF_ERROR_HELP, PdfImportError } from './pdfText';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -52,11 +52,13 @@ export default function ImportTimetable({ classes, slots, refresh, onUser, onClo
     const out: string[] = [];
     if (!r.className || r.className.length > 60) out.push('Class name must have 1 to 60 characters.');
     if (!KINDS.includes(r.kind)) out.push('Choose a session type.');
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(r.start) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(r.end) || r.end <= r.start) out.push('End must be after start, using valid times.');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(r.start)) out.push(r.sourceStart ? `Invalid source start time "${r.sourceStart}". Enter a valid 24-hour start time or uncheck this row.` : 'Choose a valid start time.');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(r.end)) out.push(r.sourceEnd ? `Invalid source end time "${r.sourceEnd}". Enter a valid 24-hour end time or uncheck this row.` : 'Choose a valid end time.');
+    if (r.start && r.end && r.end <= r.start) out.push('End must be after start, using valid times.');
     if (r.room.length > 30) out.push('Room must have at most 30 characters.');
-    const metadataConflict = slots.find((s) => sameTime(s, r) && (s.kind !== r.kind || s.room.trim() !== r.room.trim()));
+    const metadataConflict = validTimeRange(r) && slots.find((s) => sameTime(s, r) && (s.kind !== r.kind || s.room.trim() !== r.room.trim()));
     if (metadataConflict) out.push(`Metadata conflict: existing ${metadataConflict.kind}, room ${metadataConflict.room || '(not supplied)'}; proposed ${r.kind}, room ${r.room || '(not supplied)'}. Edit or uncheck this row.`);
-    else if (!already(r) && slots.some((s) => s.weekday === r.weekday && r.start < s.end && r.end > s.start)) out.push('Overlaps an existing session.');
+    else if (validTimeRange(r) && !already(r) && slots.some((s) => s.weekday === r.weekday && r.start < s.end && r.end > s.start)) out.push('Overlaps an existing session.');
     if (serverErrors[i]) out.push(serverErrors[i]);
     return out;
   });

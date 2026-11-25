@@ -16,7 +16,7 @@ test(`migrations (${testDialect}): every migration runs on an empty database and
     const expected = (await readdir(new URL('../migrations/', import.meta.url)))
       .filter((file) => /^\d+_.+\.sql$/.test(file) && (!/\.(sqlite|postgres)\.sql$/.test(file) || file.endsWith(`.${testDialect}.sql`))).sort();
     assert.deepEqual((await db.all('SELECT id FROM schema_migrations ORDER BY id')).map((row) => row.id), expected);
-    assert.equal(expected.length, 10);
+    assert.equal(expected.length, testDialect === 'postgres' ? 11 : 10);
     for (const rows of Object.values(await snapshot(db))) assert.deepEqual(rows, []);
     await migrate(db, testDialect);
     assert.equal((await db.all('SELECT id FROM schema_migrations')).length, expected.length);
@@ -40,8 +40,8 @@ test(`migrations (${testDialect}): 010 preserves populated classes, slots, atten
     const keysBefore = await foreignKeys(db);
     const sqliteDefinition = testDialect === 'sqlite' ? await db.get("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'classes'") : undefined;
 
-    await migrate(db, testDialect);
-    await migrate(db, testDialect); // Opening the migrated database again must be harmless.
+    await migrate(db, testDialect, 10);
+    await migrate(db, testDialect, 10); // Opening the 010 database again must be harmless.
     assert.deepEqual(await snapshot(db), before);
     assert.deepEqual(await foreignKeys(db), keysBefore);
     assert.equal((await db.all('SELECT id FROM schema_migrations')).length, 10);

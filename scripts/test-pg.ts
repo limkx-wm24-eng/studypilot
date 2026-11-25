@@ -14,6 +14,7 @@ for (const args of [
   ['--test-name-pattern=timetable import|database rejects', 'test/api.test.ts'],
   ['test/securityReview.test.ts', 'test/securityFixes.test.ts', 'test/stage2Auth.test.ts'],
   ['test/stageAData.test.ts', 'test/stageADates.test.ts', 'test/stageAPatch.test.ts'],
+  ['test/stageCLegacy.test.ts'],
 ]) {
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', ...args], {
     cwd: new URL('../', import.meta.url), env, stdio: 'inherit',

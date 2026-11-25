@@ -23,6 +23,8 @@ Your PDF is read in your browser and never uploaded. Only the classes and sessio
 
 Limits: 10 MB, 20 PDF pages, 40 classes and 200 sessions per import. Everything is imported as weekly. Image-only PDFs need re-saving with a text layer or pasting the table; OCR is not supported. Identical sessions are skipped and overlapping sessions must be fixed or unchecked.
 
+Source times must use hours 1–12, minutes 00–59 and AM/PM (case-insensitive; valid zero-padded hours are supported). Invalid source times remain visible with their original text and blank time fields; correct the 24-hour fields or exclude the session before importing. They are never normalized into other times, deduplicated away or included in overlap checks. Unreadable source rows are identified explicitly and require choosing the source again to correct them; other valid reviewed sessions can still be imported.
+
 Pasted text and text extracted from a PDF are limited to 200,000 characters. Before overlap checks, the parser also rejects more than 60 courses or 400 sessions; the smaller 40-class and 200-session limits still apply when confirming an import.
 
 ## Stack
@@ -128,6 +130,10 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 
 ## Attendance rules
 
+PostgreSQL forward migration `011_class_name_legacy_updates.postgres.sql` replaces migration 010's NOT VALID name-length CHECK with insert and name-update triggers in one atomic DO statement, under an exclusive classes-table lock. Existing names are never rewritten. Legacy over-limit names can receive unrelated updates, including color-only PATCH; any requested name assignment must satisfy the existing limit, even if assigning the same value. Valid renames and new names still require 1–60 characters. Migration failure rolls back the enforcement replacement; its DDL is also repeatable if migration bookkeeping needs retrying. SQLite already has these trigger semantics and needs no 011 migration. Migration 010 and earlier files remain unchanged.
+
+The existing database guards trim ASCII spaces and count Unicode code points on both databases. The installed API validator also counts code points, but trims Unicode whitespace and rejects control characters. Thus direct SQL can still store a tab-only or non-breaking-space name that the API rejects; 011 preserves those existing database rules rather than broadening or silently changing validation. Browser length limits and some import preview checks use UTF-16 units and can restrict non-BMP names earlier than the API; that existing distinction is unchanged.
+
 Dates supplied for task deadlines, semester starts and attendance (including attendance query bounds) must be real Gregorian `YYYY-MM-DD` dates; impossible dates return `400` without writes. The optional semester start can still be cleared with `""`. Valid date strings retain their exact date without timezone conversion; existing invalid stored records are not rewritten.
 
 Timetable creation and imports perform their authoritative overlap checks and writes in one transaction. They acquire the same user-row lock before reading timetable/class data. PostgreSQL holds this database lock across connections and app instances, independently for each user; SQLite uses its existing queued shared connection and `BEGIN IMMEDIATE` single-writer transaction. Class renames/deletions and slot deletions coordinate with imports through the same lock. Transactions commit before responses and roll back/release locks on errors. Ordinary overlaps still return `409`, while adjacent sessions remain allowed.
@@ -194,6 +200,7 @@ Notification deduplication history uses only the opaque user ID in its storage k
 The production-only audits report **0 production findings**. After the approved Vite 8.3.3, fast-uri 3.1.9 and serialize-javascript 7.1.3 patch updates, the web audit still reports four moderate dev-only findings: glob, minimatch, and their workbox-build / vite-plugin-pwa dependency chain. These tools run during development/builds, not in the deployed Express runtime. Fixing the remaining chain requires versions outside the current parent ranges or an incompatible plugin downgrade; those changes have not been applied or approved. No forced audit fix or major override was used.
 
 ## Roadmap
+- Q3 investigation: the task-table header intercepted pointer clicks on Delete at the tested viewport, while keyboard activation worked. Task-table layout was intentionally left unchanged during Q2 Stage C.
 - [x] Accounts and per-user data
 - [x] React + TypeScript frontend
 - [x] Class timetable
