@@ -6,6 +6,7 @@ import { daysLeft, type Tab } from './util';
 import { useDeadlineNotifications, closeDeadlineNotifications, clearLegacyNotificationHistory } from './notifications';
 import { listenForSessionEvents } from './sessionEvents';
 import Auth from './pages/Auth';
+import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
 import Classes from './pages/Classes';
 import Tasks from './pages/Tasks';
@@ -86,6 +87,19 @@ export default function App() {
     document.documentElement.classList.toggle('session-checking', checking);
   });
   const [online, setOnline] = useState(() => navigator.onLine);
+  const [resetAction, setResetAction] = useState<{ token: string | null } | null>(() => {
+    const token = new URLSearchParams(window.location.search).get('reset');
+    return token ? { token } : null;
+  });
+  const stripReset = () => {
+    const url = new URL(window.location.href); url.searchParams.delete('reset');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+  useEffect(() => {
+    const navigation = () => { const token = new URLSearchParams(window.location.search).get('reset'); setResetAction(token ? { token } : null); };
+    window.addEventListener('popstate', navigation);
+    return () => window.removeEventListener('popstate', navigation);
+  }, []);
   const [emailAction] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const confirmEmail = params.get('confirm-email');
@@ -123,6 +137,7 @@ export default function App() {
       document.documentElement.classList.remove('session-checking');
     };
   }, [emailAction]);
+  if (resetAction) return <ResetPassword key={resetAction.token ?? 'complete'} token={resetAction.token} online={online} onSuccess={() => { stripReset(); setResetAction({ token: null }); recheckSession(); }} onClose={() => { stripReset(); setResetAction(null); recheckSession(); }} />;
   if (emailAction) return <EmailAction type={emailAction.type} token={emailAction.token} />;
   return <>{checking && <main><LoadingState /></main>}<div ref={accountView} hidden={checking} inert={checking}>
     {user === undefined ? null : user ? <Shell key={`${user.id}:${sessionKey}`} user={user} setUser={(next) => {
@@ -182,12 +197,17 @@ function Shell({ user, setUser, online, sessionReady }: { user: User; setUser: (
     if (nextUser) store.refreshSummary();
     else void caches.delete('api-network-first');
   };
+  const required = tab === 'profile' ? [] : tab === 'progress' ? ['classes', 'tasks', 'courses'] as const : tab === 'timetable' ? ['classes', 'slots'] as const : tab === 'dash' ? ['classes', 'tasks', 'slots'] as const : ['classes', 'tasks'] as const;
+  const unavailable = required.some((key) => !store.loads[key].loaded);
+  const loading = required.some((key) => !store.loads[key].loaded && store.loads[key].loading);
+  const loadErrors = Object.entries(store.loads).filter(([, value]) => value.error);
   return <><header><div className="brand-lockup"><span className="logo-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 6.5h18v19H7z" /><path d="M11 11h10M11 15h10M11 19h7" /></svg></span><h1>StudyPilot</h1></div><nav aria-label="Main navigation">{TABS.map(([key, label, icon]) => <button key={key} data-tab={key} aria-current={key === tab ? 'page' : undefined} onClick={() => setTab(key)}><span className="nav-icon" aria-hidden="true"><TabIcon name={icon} /></span><span>{label}{key === 'dash' && attentionCount > 0 ? ` (${attentionCount})` : ''}</span></button>)}</nav><span className="user-avatar" aria-hidden="true">{user.name.trim().charAt(0).toUpperCase() || user.email.charAt(0).toUpperCase()}</span></header>
     <main>
       {!online && <p className="offline-banner" role="status">You are offline. Saved app screens are available, but changes are read-only until you reconnect.</p>}
       {store.error && <p className="banner" role="alert">{store.error} <button className="link" onClick={store.clearError}>Dismiss</button></p>}
+      {loadErrors.length > 0 && <p className="banner" role="alert">Could not load {loadErrors.map(([key]) => key).join(', ')}. <button className="link" onClick={store.retryLoad} disabled={Object.values(store.loads).some((load) => load.loading)}>Retry loading</button></p>}
       <fieldset className="app-content" disabled={!online} aria-label={online ? undefined : 'Read-only while offline'}>
-        {store.loading ? <LoadingState />
+        {loading ? <LoadingState /> : unavailable ? <p role="status">Some data is unavailable. Retry loading to continue.</p>
           : tab === 'dash' ? <Dashboard name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
           : tab === 'classes' ? <Classes {...store} />
           : tab === 'tasks' ? <Tasks {...store} />

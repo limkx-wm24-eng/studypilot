@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type Course, type User } from '../api';
 import type { Store } from '../store';
 import type { Tab } from '../util';
@@ -8,7 +8,7 @@ import { LETTER_GRADES, type LetterGrade } from '../gradeScale';
 import EmptyState from '../EmptyState';
 import { showToast } from '../toast';
 
-type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse'> & { user: User; onUser: (u: User) => void; go: (t: Tab) => void };
+type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse' | 'isPending' | 'loads'> & { user: User; onUser: (u: User) => void; go: (t: Tab) => void };
 const hrs = (n: number) => `${n} hour${n === 1 ? '' : 's'}`;
 const weekLabel = (start: string, weeks: number) => {
   if (!start) return null;
@@ -18,12 +18,28 @@ const weekLabel = (start: string, weeks: number) => {
   return week < 1 ? `This semester starts in ${-days} day${days === -1 ? '' : 's'}.` : week > weeks ? `The ${weeks} teaching weeks are over.` : `Week ${week} of ${weeks}.`;
 };
 
-export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, user, onUser, go }: Props) {
+export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, isPending, loads, user, onUser, go }: Props) {
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [courseForm, setCourseForm] = useState({ semesterLabel: 'Semester 1', courseName: '', creditHours: 3, grade: '' });
   const [cgpaTarget, setCgpaTarget] = useState(3.5);
   const [futureCredits, setFutureCredits] = useState(20);
-  const update = (patch: Partial<Pick<User, 'semesterWeeks' | 'semesterStart'>>) => api.patch<User>('/api/auth/me', patch).then((updated) => { onUser(updated); showToast('Attendance settings saved.'); }).catch(() => {});
+  const [semesterDraft, setSemesterDraft] = useState({ semesterStart: user.semesterStart, semesterWeeks: user.semesterWeeks });
+  const [settingsError, setSettingsError] = useState('');
+  const [saving, setSaving] = useState(false);
+  const pending = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useEffect(() => { setSemesterDraft({ semesterStart: user.semesterStart, semesterWeeks: user.semesterWeeks }); }, [user.semesterStart, user.semesterWeeks]);
+  const update = async (patch: Partial<Pick<User, 'semesterWeeks' | 'semesterStart'>>) => {
+    if (pending.current) return;
+    pending.current = true; setSaving(true); setSettingsError('');
+    try {
+      const updated = await api.patch<User>('/api/auth/me', patch);
+      if (alive.current) { onUser(updated); showToast('Attendance settings saved.'); }
+    } catch (failure) { if (alive.current) setSettingsError((failure as Error).message); }
+    finally { pending.current = false; if (alive.current) setSaving(false); }
+  };
+  const unsaved = semesterDraft.semesterStart !== user.semesterStart || semesterDraft.semesterWeeks !== user.semesterWeeks;
   const cur = currentSemester(isoToday());
   const preset = summary ? SEMESTERS.find((s) => s.start === summary.semesterStart && s.weeks === summary.weeks) : undefined;
   const cgpa = calculateCgpa(courses);
@@ -34,12 +50,14 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
     <>
       <h2>CGPA tracker</h2>
       <p className="hint">Uses the official TAR UMT grade points. GPA and CGPA are shown to four decimal places.</p>
-      <form className="row" onSubmit={async (event) => { event.preventDefault(); await addCourse({ ...courseForm, creditHours: Number(courseForm.creditHours), grade: courseForm.grade ? courseForm.grade as LetterGrade : null }); setCourseForm({ ...courseForm, courseName: '' }); }}>
+      <form className="row" onSubmit={async (event) => { event.preventDefault(); if (await addCourse({ ...courseForm, creditHours: Number(courseForm.creditHours), grade: courseForm.grade ? courseForm.grade as LetterGrade : null })) setCourseForm({ ...courseForm, courseName: '' }); }}>
+        <fieldset className="app-content row" disabled={isPending('addCourse')} aria-busy={isPending('addCourse')}>
         <label>Semester<input required maxLength={40} value={courseForm.semesterLabel} onChange={(event) => setCourseForm({ ...courseForm, semesterLabel: event.target.value })} /></label>
         <label>Course name<input required maxLength={80} value={courseForm.courseName} onChange={(event) => setCourseForm({ ...courseForm, courseName: event.target.value })} /></label>
         <label>Credit hours<input className="n" type="number" min={0.5} max={12} step={0.5} value={courseForm.creditHours} onChange={(event) => setCourseForm({ ...courseForm, creditHours: Number(event.target.value) })} /></label>
         <label>Grade<select value={courseForm.grade} onChange={(event) => setCourseForm({ ...courseForm, grade: event.target.value })}><option value="">Not yet</option>{LETTER_GRADES.map((grade) => <option key={grade}>{grade}</option>)}</select></label>
         <button className="btn">Add course</button>
+        </fieldset>
       </form>
       <div className="stats cgpa-stats"><div><b>{cgpa.gpa?.toFixed(4) ?? '—'}</b><span>cumulative CGPA</span></div><div><b>{cgpa.credits}</b><span>graded credit hours</span></div></div>
       {semesters.map((semester) => {
@@ -92,18 +110,18 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
 
       <h2 style={{ marginTop: 32 }}>Attendance</h2>
       <p className="hint">Worked out from the classes you log in Timetable. Present and approved leave both count as attended.</p>
-      {!summary || summary.requiredPercent === null ? (
+      {!loads.summary.loaded ? <p role="status">Attendance summary is {loads.summary.loading ? 'loading' : 'unavailable'}. Use Retry loading if needed.</p> : !summary || summary.requiredPercent === null ? (
         <p>Choose your course type in <button className="link" onClick={() => go('profile')}>Profile</button> to see your attendance requirement.</p>
       ) : (
         <>
           {cur
             ? <p>{CALENDAR_LABEL}: today is in the <b>{cur.name}</b>, a {kind(cur)} semester. <b>{phase(cur, isoToday())}.</b></p>
             : <p className="mut">The {CALENDAR_LABEL} has no semester running today. Set the start date yourself once the next one is published.</p>}
-          <div className="row">
+          <fieldset className="app-content row" disabled={saving} aria-busy={saving}>
             <label>TAR UMT semester
               <select value={preset?.start ?? ''} onChange={(e) => {
                 const s = SEMESTERS.find((x) => x.start === e.target.value);
-                if (s) update({ semesterWeeks: s.weeks, semesterStart: s.start });
+                if (s) { setSemesterDraft({ semesterWeeks: s.weeks, semesterStart: s.start }); void update({ semesterWeeks: s.weeks, semesterStart: s.start }); }
               }}>
                 <option value="">Custom</option>
                 {SEMESTERS.map((s) => <option key={s.start} value={s.start}>{s.name} ({kind(s)}, from {s.start})</option>)}
@@ -111,16 +129,18 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
             </label>
             {preset && <p>Teaching ends {teachingEnd(preset)}. Exams: {preset.exam?.join(' to ') ?? 'unknown'}. Holidays: {preset.holidays?.join(' to ') ?? 'unknown'}.</p>}
             <label>Semester type
-              <select value={summary.weeks === 7 ? 7 : 14} onChange={(e) => update({ semesterWeeks: Number(e.target.value) })}>
+              <select value={semesterDraft.semesterWeeks} onChange={(e) => { const semesterWeeks = Number(e.target.value); setSemesterDraft({ ...semesterDraft, semesterWeeks }); void update({ semesterWeeks }); }}>
                 <option value={14}>Long semester (14 teaching weeks)</option>
                 <option value={7}>Short semester (7 teaching weeks)</option>
               </select>
             </label>
             <label>Semester start date (optional)
-              <input type="date" defaultValue={summary.semesterStart} key={summary.semesterStart}
-                onBlur={(e) => { if (e.target.value !== summary.semesterStart) update({ semesterStart: e.target.value }); }} />
+              <input type="date" value={semesterDraft.semesterStart} onChange={(e) => setSemesterDraft({ ...semesterDraft, semesterStart: e.target.value })}
+                onBlur={() => { if (semesterDraft.semesterStart !== user.semesterStart) void update(semesterDraft); }} />
             </label>
-          </div>
+          </fieldset>
+          <p role="status">{saving ? 'Saving attendance settings...' : unsaved ? 'Unsaved attendance settings.' : 'Attendance settings saved.'} Saved semester start: {user.semesterStart || 'not set'}.</p>
+          {settingsError && <p className="bad" role="alert">{settingsError} <button className="link" disabled={saving} onClick={() => void update(semesterDraft)}>Retry settings</button></p>}
           <p className="mut">
             Requirement: {summary.requiredPercent}% for {user.courseType} courses. {weekLabel(summary.semesterStart, summary.weeks) ?? "Set the start date so only this semester's classes are counted."}
           </p>

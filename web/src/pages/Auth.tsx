@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
+import { useState, type ChangeEvent, type FormEvent } from 'react';
 import { api, type User } from '../api';
 import { useEmailAvailability } from '../emailAvailability';
 
@@ -11,21 +11,9 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
   const [form, setForm] = useState({ name: '', email: '', password: '' });
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
-  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.search).get('reset'));
-  const [resetComplete, setResetComplete] = useState(false);
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotSent, setForgotSent] = useState(false);
   const set = (key: keyof typeof form) => (e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, [key]: e.target.value });
-
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    if (url.searchParams.has('reset')) {
-      url.searchParams.delete('reset');
-      window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
-    }
-  }, []);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -48,22 +36,6 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
     } catch (err) { setError((err as Error).message); }
   };
 
-  const submitReset = async (event: FormEvent) => {
-    event.preventDefault();
-    setError('');
-    if (newPassword !== confirmPassword) {
-      setError('Passwords do not match.');
-      return;
-    }
-    try {
-      await api.post('/api/auth/reset', { token: resetToken, newPassword });
-      setNewPassword('');
-      setConfirmPassword('');
-      setResetToken(null);
-      setResetComplete(true);
-    } catch (err) { setError((err as Error).message); }
-  };
-
   const login = view === 'login';
   return (
     <main className="auth-layout">
@@ -76,18 +48,7 @@ export default function Auth({ onUser, online }: { onUser: (u: User) => void; on
       <section className="auth auth-card">
       <h1>StudyPilot</h1>
       {!online && <p className="offline-banner" role="status">You are offline. Log in and account changes need a connection.</p>}
-      {resetToken ? <>
-        <h2>Choose a new password</h2>
-        <fieldset className="app-content" disabled={!online}><form className="stack" onSubmit={submitReset}>
-          <label>New password<input type="password" required minLength={8} maxLength={72} autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
-          <label>Confirm new password<input type="password" required minLength={8} maxLength={72} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
-          {error && <p className="bad" role="alert">{error}</p>}
-          <button className="btn">Reset password</button>
-        </form></fieldset>
-      </> : resetComplete ? <>
-        <p role="status">Password updated.</p>
-        <button className="link" onClick={() => { setResetComplete(false); setView('login'); }}>Log in</button>
-      </> : view === 'forgot' ? <>
+      {view === 'forgot' ? <>
         {emailEnabled === true ? <p className="hint">Enter the email address for your account.</p> : <p role="status">{emailEnabled === false ? 'Email is not set up on this demo, so password reset is unavailable.' : notice}</p>}
         {forgotSent ? <p role="status">{forgotMessage}</p> : <fieldset className="app-content" disabled={!online || emailEnabled !== true}><form className="stack" onSubmit={requestReset}>
           <label>Email<input type="email" required autoComplete="email" value={forgotEmail} onChange={(event) => setForgotEmail(event.target.value)} /></label>

@@ -4,13 +4,13 @@ import type { Store } from '../store';
 import { dueText, daysLeft } from '../util';
 import EmptyState from '../EmptyState';
 
-type Props = Pick<Store, 'classes' | 'tasks' | 'addTask' | 'patchTask' | 'removeTask'>;
+type Props = Pick<Store, 'classes' | 'tasks' | 'addTask' | 'patchTask' | 'removeTask' | 'isPending'>;
 type View = 'list' | 'calendar';
 const weekdaysMonday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const weekdaysSunday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const dateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-export default function Tasks({ classes, tasks, addTask, patchTask, removeTask }: Props) {
+export default function Tasks({ classes, tasks, addTask, patchTask, removeTask, isPending }: Props) {
   const [form, setForm] = useState({ classId: '', type: 'Assignment' as Task['type'], name: '', priority: 'Medium' as Task['priority'], due: '' });
   const [filter, setFilter] = useState('All');
   const [view, setView] = useState<View>('list');
@@ -23,13 +23,15 @@ export default function Tasks({ classes, tasks, addTask, patchTask, removeTask }
       <p className="hint">Add assignments, homework, exams and projects. Change a status or enter a grade right in the table.</p>
       <details className="add-task-card">
       <summary>+ Add task</summary>
-      <form className="row" onSubmit={async (event) => { event.preventDefault(); await addTask({ ...form, classId }); setForm({ ...form, name: '', due: '' }); }}>
+      <form className="row" onSubmit={async (event) => { event.preventDefault(); if (await addTask({ ...form, classId })) setForm({ ...form, name: '', due: '' }); }}>
+        <fieldset className="app-content row" disabled={isPending('addTask')} aria-busy={isPending('addTask')}>
         <label>Class<select value={classId} onChange={(event) => setForm({ ...form, classId: event.target.value })}>{classes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as Task['type'] })}>{TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
         <label>Task name<input value={form.name} required maxLength={60} placeholder="e.g. Assignment 2" onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
         <label>Priority<select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value as Task['priority'] })}>{PRIORITIES.map((priority) => <option key={priority}>{priority}</option>)}</select></label>
         <label>Due date<input type="date" required value={form.due} onChange={(event) => setForm({ ...form, due: event.target.value })} /></label>
         <button className="btn">Add task</button>
+        </fieldset>
       </form>
       </details>
 

@@ -44,7 +44,7 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
   if (!res.ok) throw new ApiError(data.error ?? 'Something went wrong', res.status, data.conflicts);
   const path = new URL(url, window.location.href).pathname;
   const authTransition =
-    (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path)) ||
+    (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout', '/api/auth/reset'].includes(path)) ||
     (method === 'DELETE' && path === '/api/auth/me');
   if (authTransition) publishSessionEvent(path === '/api/auth/logout' || method === 'DELETE' ? 'logout' : 'changed');
   if (authTransition && typeof caches !== 'undefined') await caches.delete('api-network-first');
