@@ -129,23 +129,76 @@ class PostgresDatabase implements Database {
 }
 
 const migrationsPath = fileURLToPath(new URL('../migrations/', import.meta.url));
-const duplicateColumn = (error: unknown) => error instanceof Error && /duplicate column|already exists/i.test(error.message);
+
+// Only these historical, single-column SQLite upgrades may predate the ledger.
+const legacyColumns: Record<string, [string, string, string, number, string | null]> = {
+  '002_users_semester_weeks.sql': ['users', 'semester_weeks', 'INTEGER', 1, '14'],
+  '003_users_semester_start.sql': ['users', 'semester_start', 'TEXT', 1, "''"],
+  '004_classes_created_at.sql': ['classes', 'created_at', 'BIGINT', 1, '0'],
+  '005_tasks_created_at.sql': ['tasks', 'created_at', 'BIGINT', 1, '0'],
+  '006_users_reminder_days.sql': ['users', 'reminder_days', 'INTEGER', 1, '1'],
+  '009_users_email_verified_at.sql': ['users', 'email_verified_at', 'BIGINT', 0, null],
+};
+const normalizedSql = (sql: string) => sql.replace(/--[^\n]*/g, '').replace(/\s+/g, ' ').trim().replace(/;$/, '');
+async function existingLegacyColumn(db: Database, file: string): Promise<boolean> {
+  const expected = legacyColumns[file];
+  if (!expected) return false;
+  const [table, name, type, required, defaultValue] = expected;
+  const column = (await db.all(`PRAGMA table_info("${table}")`)).find((row) => row.name === name);
+  if (!column) return false;
+  if (String(column.type).toUpperCase() !== type || Number(column.notnull) !== required || Number(column.pk) !== 0 || column.dflt_value !== defaultValue) {
+    throw new Error(`Legacy SQLite column ${table}.${name} does not match migration ${file}`);
+  }
+  return true;
+}
+
+async function prepareSqliteGuards(db: Database, file: string, sql: string) {
+  if (!['010_class_name_limit.sqlite.sql', '012_class_name_guard_repair.sqlite.sql'].includes(file)) return;
+  for (const name of ['classes_name_insert_limit', 'classes_name_update_limit']) {
+    const trigger = await db.get("SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", [name]);
+    if (!trigger) continue;
+    if (trigger.tbl_name !== 'classes') throw new Error('Unexpected table for a SQLite class-name guard');
+    if (file.startsWith('010_')) {
+      // Recover only a canonical fragment left by the old non-atomic 010 runner.
+      // Arbitrary duplicate objects/definitions still fail without recording 010.
+      const definition = [...sql.matchAll(/CREATE TRIGGER ([a-z_]+)[\s\S]+?END;/g)].find((match) => match[1] === name)?.[0];
+      if (!definition || normalizedSql(String(trigger.sql)) !== normalizedSql(definition)) throw new Error('Unexpected definition for an unrecorded SQLite class-name guard');
+      await db.exec(`DROP TRIGGER "${name}"`);
+    }
+  }
+}
 
 export async function migrate(db: Database, dialect: 'sqlite' | 'postgres', through = Infinity): Promise<void> {
-  await db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)');
   const files = (await readdir(migrationsPath)).filter((file) => /^\d+_.+\.sql$/.test(file)
     && Number(file.split('_')[0]) <= through
     && (!/\.(sqlite|postgres)\.sql$/.test(file) || file.endsWith(`.${dialect}.sql`))).sort();
-  for (const file of files) {
-    if (await db.get('SELECT id FROM schema_migrations WHERE id = ?', [file])) continue;
-    const sql = await readFile(`${migrationsPath}/${file}`, 'utf8');
+  const sources = await Promise.all(files.map(async (file) => ({ file, sql: await readFile(`${migrationsPath}/${file}`, 'utf8') })));
+  const deadline = performance.now() + 15_000;
+  for (;;) {
     try {
-      await db.exec(sql);
+      await db.transaction(async (transaction) => {
+        if (dialect === 'postgres') {
+          await transaction.exec("SET LOCAL lock_timeout = '15s'; SET LOCAL statement_timeout = '60s'");
+          // One transaction/pinned connection, including ledger initialization.
+          // Database + schema scope keeps disposable test schemas independent.
+          await transaction.get("SELECT pg_advisory_xact_lock(hashtext('studypilot:migrations:' || current_database()), hashtext(current_schema()))");
+        }
+        await transaction.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)');
+        for (const { file, sql } of sources) {
+          if (await transaction.get('SELECT id FROM schema_migrations WHERE id = ?', [file])) continue;
+          if (dialect === 'sqlite') await prepareSqliteGuards(transaction, file, sql);
+          if (dialect !== 'sqlite' || !await existingLegacyColumn(transaction, file)) await transaction.exec(sql);
+          await transaction.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', [file, Date.now()]);
+        }
+      });
+      return;
     } catch (error) {
-      // Older SQLite files have no migration history. A duplicate ADD COLUMN means that repair was already made.
-      if (!duplicateColumn(error)) throw error;
+      const busy = dialect === 'sqlite' && typeof error === 'object' && error !== null && 'errcode' in error && [5, 6].includes(Number(error.errcode));
+      if (!busy) throw error;
+      if (performance.now() >= deadline) throw new Error('SQLite migration startup remained busy for 15 seconds');
+      // Yield rather than synchronously waiting on another in-process connection.
+      await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    await db.run('INSERT INTO schema_migrations (id, applied_at) VALUES (?, ?)', [file, Date.now()]);
   }
 }
 

@@ -100,7 +100,7 @@ test(`Q2-C migrations (${testDialect}): fresh and existing-010 paths apply once 
     try {
       await migrate(db, testDialect);
       const ledger = await db.all('SELECT id, applied_at FROM schema_migrations ORDER BY id');
-      assert.equal(ledger.length, testDialect === 'postgres' ? 11 : 10);
+      assert.equal(ledger.length, 11);
       assert.equal(ledger.filter((row) => row.id === migration).length, testDialect === 'postgres' ? 1 : 0);
       await migrate(db, testDialect); assert.deepEqual(await db.all('SELECT id, applied_at FROM schema_migrations ORDER BY id'), ledger);
       if (testDialect === 'postgres') {
@@ -112,14 +112,14 @@ test(`Q2-C migrations (${testDialect}): fresh and existing-010 paths apply once 
 });
 
 if (testDialect === 'postgres') test('Q2-C PostgreSQL: failure after dropping the CHECK rolls back all enforcement DDL', async () => {
-  const h = await fixture(), exec = h.db.exec.bind(h.db);
+  const h = await fixture(), transaction = h.db.transaction.bind(h.db);
   try {
     const source = await readFile(new URL(`../migrations/${migration}`, import.meta.url), 'utf8');
     const failing = source.replace('END;\n$migration$;', "RAISE EXCEPTION 'Synthetic migration failure';\nEND;\n$migration$;");
     assert.notEqual(failing, source);
-    h.db.exec = (sql) => exec(sql === source ? failing : sql);
+    h.db.transaction = (operation) => transaction((tx) => operation({ ...tx, exec: (sql) => tx.exec(sql === source ? failing : sql) }));
     await assert.rejects(migrate(h.db, 'postgres'), /Synthetic migration failure/);
-    h.db.exec = exec;
+    h.db.transaction = transaction;
     assert.equal((await h.db.get('SELECT id FROM schema_migrations WHERE id = ?', [migration])), undefined);
     assert.equal((await h.db.get("SELECT COUNT(*)::int AS count FROM pg_constraint WHERE conrelid = 'classes'::regclass AND conname = 'classes_name_length'"))!.count, 1);
     assert.equal((await h.db.get("SELECT COUNT(*)::int AS count FROM pg_trigger WHERE tgrelid = 'classes'::regclass AND NOT tgisinternal"))!.count, 0);
@@ -127,5 +127,5 @@ if (testDialect === 'postgres') test('Q2-C PostgreSQL: failure after dropping th
     await assert.rejects(h.db.run('UPDATE classes SET color = ? WHERE id = ?', ['#112233', h.id]));
     await migrate(h.db, 'postgres');
     assert.equal((await h.send('PATCH', `/api/classes/${h.id}`, { color: '#445566' }, h.owner.cookie)).status, 200);
-  } finally { h.db.exec = exec; await h.close(); }
+  } finally { h.db.transaction = transaction; await h.close(); }
 });

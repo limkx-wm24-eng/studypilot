@@ -74,6 +74,10 @@ Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to
 
 Existing SQLite databases are migrated automatically on startup.
 
+Migration startup commits ledger initialization, all pending SQL and its history in one transaction. SQLite retains its shared-connection transaction queue and uses `BEGIN IMMEDIATE`; migration contention yields between retries for at most 15 seconds rather than blocking the event loop with synchronous waits. PostgreSQL pins one connection, takes a transaction-scoped advisory lock keyed by database and current schema before creating/checking the ledger, and rechecks history under that lock. Its migration lock wait is limited to 15 seconds and each statement to 60 seconds. Commit, rollback or connection loss releases the lock; errors propagate and a later startup can retry. Application transactions and per-user timetable locks are unchanged.
+
+Only historical SQLite single-column migrations 002–006 and 009 may be recognized without history, after their declared type, nullability, default and non-primary-key status match. Duplicate-object messages are not generally suppressed. An unrecorded canonical fragment of 010 is explicitly recreated inside the transaction; an unexpected definition fails. Forward migration `012_class_name_guard_repair.sqlite.sql` restores both class-name triggers even if old 010 history incorrectly claims completion. It is safe to repeat, never rewrites names or related data, permits unrelated updates to legacy names and preserves the existing whitespace/code-point policy. PostgreSQL still ends at 011; SQLite applies 001–010 plus 012. Historical migrations 001–011 remain unchanged.
+
 ## Email
 Email verification, password reset and the Brevo HTTPS sender are built and tested with fake mail delivery. Real delivery has not been tested. The live demo intentionally runs with email off: the free providers considered require organization details or a verified domain. Render's free tier blocks SMTP, so this project supports an HTTPS email API instead.
 
@@ -93,7 +97,13 @@ For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (
 
 ## Deploy
 
-This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/studypilot-ts/blob/main/render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
+This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/studypilot/blob/main/render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
+
+For reproducible release builds use `npm ci`, then `npm --prefix web ci`, followed by `npm run build:all`; the earlier `npm install` commands are for development. The Blueprint explicitly sets `dockerContext: .` and `dockerfilePath: ./Dockerfile`, relative to the repository root. `node scripts/check-blueprint.mjs --build` validates and builds those actual paths. The guard supports this project's one-service Blueprint and simple scalar path fields; unsupported syntax or a structure change requires extending the guard first. It rejects missing paths, wrong file types, duplicates and paths/links escaping the repository. CI runs the guard and its negative regressions without a YAML dependency.
+
+Before deployment, an authorized owner must privately verify the intended hosted PostgreSQL target, TLS configuration, migration permissions and reachability. An absent `DATABASE_URL` still selects SQLite; that fallback is inappropriate for persistent data on ephemeral free hosting. Keep `NODE_ENV=production` and the hosting-provided `PORT`. The live demo intentionally leaves `MAIL_API_KEY` unset; no mail-provider setup is required. Actual Render settings and HTTPS cookie behavior have not been verified by local Docker tests.
+
+Main automatically deploys according to the owner's configuration. Merge authorization and deployment authorization must be coordinated: a merge-only operation requires the owner to verify auto-deployment is suspended first. No repository test changes hosting settings or deploys the application.
 
 1. Push this repository to GitHub. The Blueprint is at the repository root and builds the app from the repository root.
 2. Create a Neon Free project, then copy its PostgreSQL connection string from the **Connect** panel. Use the connection string with `sslmode=require`.
@@ -104,6 +114,18 @@ This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/stu
 Use `.env.example` as a reference for local environment-variable names and replace its placeholders when setting values. The app does not read `.env` automatically; set variables in PowerShell or in your host dashboard. Do not commit real credentials.
 
 Free-tier notes verified in October 2026: Render Free web services spin down after 15 minutes without traffic, receive 750 free instance-hours per workspace each month, and can restart at any time. [Render's free-service limits](https://render.com/docs/free) apply. Neon's Free plan currently provides 1 GB storage and 100 CU-hours of compute per project each month; see [Neon's current Free plan announcement](https://neon.com/blog/neon-free-plan-1-gb-per-project). These limits make this suitable for a portfolio demo, not a production service.
+
+## Recovery and rollback
+
+Never blindly revert to old main `ac4f510258ffe95203d153d6eefd285b5ed77d3e` after versioned password records have been written: its legacy-only reader returns HTTP 500 for those accounts. Do not downgrade stored hashes or require blanket resets to work around this.
+
+The selected recovery target is immutable Q3 Stage 3 commit **`14614752e81f6e4d6a78f93210b9eb7c9c447939`**. It retains the Q1–Q3 fixes, current/legacy/supported older password readers and normal upgrades. Run `node scripts/test-rollback.mjs` from the candidate checkout to build candidate, rollback and negative old-main images. Historical builds use `git archive` of the exact SHAs and their own manifests/lockfiles, with Docker's `npm ci`; no host dependency installation or branch update is performed. CI also runs this smoke against disposable SQLite and PostgreSQL data. It exercises candidate → rollback → candidate, registration, legacy/older upgrades, existing sessions, incorrect credentials, ownership, study-data writes and database guards. Raw credentials, cookies and password records are never logged. The script prints its temporary evidence directory, containing `images.json`, each `*-image.id`, build logs and sanitized results. Record and retain the tested rollback image ID before release; do not substitute an untested rebuild. These are local image identities, not published registry images. The Docker base is floating Node 22, so an identical original historical binary is not asserted.
+
+The selected target still has the old migration runner and the old Blueprint paths. It is a recovery application only **after the corrected candidate has committed every migration and the ledger, both class-name guards and foreign keys have been independently verified**. Halt writes and concurrent startup during the handoff. Use the corrected repository-root Docker paths; do not apply the old Blueprint. Start only one rollback instance, with no pending, interrupted or competing migrations. It accepts the completed 012 SQLite ledger and the existing 011 PostgreSQL schema without reverting either. If these prerequisites cannot be established, use a forward corrective release instead.
+
+Before any separately authorized deployment, take an access-controlled backup and prove restoration into an approved isolated database. For PostgreSQL, use a custom-format `pg_dump`, inspect it with `pg_restore --list`, restore with `pg_restore --exit-on-error`, and verify schema history, guard behavior, row/ownership relationships and critical workflows. For SQLite, stop writers and take a consistent database backup, not an arbitrary copy during a write. Keep the backup separate from application storage and credentials out of commands/logs. Local synthetic PostgreSQL restore and subsequent upgrade were tested; production backups and hosting recovery remain unverified.
+
+Recovery succeeds only when compatible accounts can log in, existing sessions and ownership checks work, study data remains readable/writable, guards and history remain correct, and the corrected candidate can restart without password downgrade or data loss. Migration 011 and repair 012 do not require a destructive schema downgrade. Restore a database only with explicit authorization and an accepted plan for post-backup writes; do not overwrite newer data merely to restore an older image. Actual hosted PostgreSQL selection, HTTPS cookie round trips, proxy forwarding, resource limits and auto-deploy suspension still require separate production verification. No test authorizes a merge or deployment.
 
 ## API
 All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attendance` routes need a logged-in session and only return or change the caller's own data. The app also provides a task calendar, browser deadline reminders and a CGPA tracker.
@@ -202,7 +224,7 @@ Notification deduplication history uses only the opaque user ID in its storage k
 The production-only audits report **0 production findings**. After the approved Vite 8.3.3, fast-uri 3.1.9 and serialize-javascript 7.1.3 patch updates, the web audit still reports four moderate dev-only findings: glob, minimatch, and their workbox-build / vite-plugin-pwa dependency chain. These tools run during development/builds, not in the deployed Express runtime. Fixing the remaining chain requires versions outside the current parent ranges or an incompatible plugin downgrade; those changes have not been applied or approved. No forced audit fix or major override was used.
 
 ## Roadmap
-- Q3 investigation: the task-table header intercepted pointer clicks on Delete at the tested viewport, while keyboard activation worked. Task-table layout was intentionally left unchanged during Q2 Stage C.
+- [x] Q3 task-control pointer access, session recovery, responsive layout, contrast, native calendar semantics and live Malaysia-date consistency.
 - [x] Accounts and per-user data
 - [x] React + TypeScript frontend
 - [x] Class timetable

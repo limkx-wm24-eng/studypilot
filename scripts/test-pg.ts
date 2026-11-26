@@ -10,7 +10,7 @@ catch (error) {
 const env = { ...process.env, DATABASE_URL: '', DB_PATH: ':memory:', NODE_ENV: 'test', STUDYPILOT_TEST_POSTGRES: '1', TEST_DATABASE_URL: databaseUrl };
 // Exercise migrations, imports and security regressions on isolated PostgreSQL schemas.
 for (const args of [
-  ['test/migrations.test.ts'],
+  ['test/migrations.test.ts', 'test/migrationReliability.test.ts'],
   ['--test-name-pattern=timetable import|database rejects', 'test/api.test.ts'],
   ['test/securityReview.test.ts', 'test/securityFixes.test.ts', 'test/stage2Auth.test.ts'],
   ['test/stageAData.test.ts', 'test/stageADates.test.ts', 'test/stageAPatch.test.ts'],

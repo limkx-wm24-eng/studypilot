@@ -16,7 +16,7 @@ test(`migrations (${testDialect}): every migration runs on an empty database and
     const expected = (await readdir(new URL('../migrations/', import.meta.url)))
       .filter((file) => /^\d+_.+\.sql$/.test(file) && (!/\.(sqlite|postgres)\.sql$/.test(file) || file.endsWith(`.${testDialect}.sql`))).sort();
     assert.deepEqual((await db.all('SELECT id FROM schema_migrations ORDER BY id')).map((row) => row.id), expected);
-    assert.equal(expected.length, testDialect === 'postgres' ? 11 : 10);
+    assert.equal(expected.length, 11);
     for (const rows of Object.values(await snapshot(db))) assert.deepEqual(rows, []);
     await migrate(db, testDialect);
     assert.equal((await db.all('SELECT id FROM schema_migrations')).length, expected.length);
