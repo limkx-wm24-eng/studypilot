@@ -127,15 +127,19 @@ if(testDialect==='sqlite') {
   });
   test('R-02 SQLite startup yields while another connection holds the migration transaction',async()=>{
     const path=join(await mkdtemp(join(tmpdir(),'studypilot-migration-concurrent-')),'synthetic.sqlite');
-    const first=await openDb(path,{databaseUrl:'',migrationsThrough:9});const ids=await seed(first),before=await snapshot(first);
-    const entered=barrier(),release=barrier();let second:Database|undefined;
+    const first=await openDb(path,{databaseUrl:'',migrationsThrough:9}),second=await openDb(path,{databaseUrl:'',migrationsThrough:9});
+    const ids=await seed(first),before=await snapshot(first),entered=barrier(),attempted=barrier(),release=barrier();let busy=0;
     const held=wrap(first,tx=>({...tx,exec:async sql=>{if(sql===source010){entered.resolve();await release.promise;}await tx.exec(sql);}}));
-    const pending=migrate(held,'sqlite');await entered.promise;
+    const pending=migrate(held,'sqlite');await entered.promise;let competing=Promise.resolve();
     try{
-      const peer=openDb(path,{databaseUrl:''});await new Promise(done=>setImmediate(done));release.resolve();
-      [second]=await Promise.all([peer,pending.then(()=>first)]);assert.equal(await snapshot(second),before);
+      const peer={...wrap(second,tx=>tx),transaction:async<T>(operation:(tx:Database)=>Promise<T>)=>{
+        attempted.resolve();
+        try{return await second.transaction(operation);}catch(error){if(typeof error==='object'&&error!==null&&'errcode' in error&&[5,6].includes(Number(error.errcode)))busy++;throw error;}
+      }};
+      competing=migrate(peer,'sqlite');await attempted.promise;release.resolve();
+      await Promise.all([pending,competing]);assert.ok(busy>0,'A separate connection must actually contend before the holder is released');assert.equal(await snapshot(second),before);
       await first.transaction(tx=>migrate(tx,'sqlite'));await guards(second,ids);
-    }finally{release.resolve();await pending;await second?.close();await first.close();}
+    }finally{release.resolve();await Promise.allSettled([pending,competing]);await second.close();await first.close();}
   });
 }
 
