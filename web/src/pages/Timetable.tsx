@@ -2,20 +2,17 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import type { UpdateUser } from '../useUserSession';
 import { api, KINDS, type Entry, type Mark, type Slot } from '../api';
 import type { Store } from '../store';
+import { addDays, mondayOf } from '../dateOnly';
+import { usePeriodSelection } from '../usePeriodSelection';
 import EmptyState from '../EmptyState';
 import { showToast } from '../toast';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MARKS: [Mark, string][] = [['present', 'Present'], ['absent', 'Absent'], ['leave', 'Leave']];
-const pad = (n: number) => String(n).padStart(2, '0');
-const iso = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-const mondayOf = (d: Date) => addDays(d, -((d.getDay() + 6) % 7));
-
 const ImportTimetable = lazy(() => import('../import/ImportTimetable'));
-type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary' | 'refreshTimetable' | 'isPending'> & { updateUser: UpdateUser };
+type Props = Pick<Store, 'classes' | 'slots' | 'addSlot' | 'removeSlot' | 'refreshSummary' | 'refreshTimetable' | 'isPending'> & { updateUser: UpdateUser; today: string };
 
-export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary, refreshTimetable, updateUser, isPending }: Props) {
+export default function Timetable({ classes, slots, addSlot, removeSlot, refreshSummary, refreshTimetable, updateUser, isPending, today }: Props) {
   const [importing, setImporting] = useState(false);
   const importButton = useRef<HTMLButtonElement>(null);
   const wasImporting = useRef(false);
@@ -25,7 +22,6 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
   }, [importing]);
   const importControls = <><button ref={importButton} className="btn" onClick={() => setImporting(true)}>Import timetable</button>
     {importing && <Suspense fallback={<p role="status">Loading importer...</p>}><ImportTimetable classes={classes} slots={slots} updateUser={updateUser} refresh={refreshTimetable} onClose={() => setImporting(false)} /></Suspense>}</>;
-  const [monday, setMonday] = useState(() => mondayOf(new Date()));
   const [entryResult, setEntryResult] = useState<{ week: string; rows: Entry[] }>({ week: '', rows: [] });
   const [loading, setLoading] = useState(true);
   const [readError, setReadError] = useState('');
@@ -34,13 +30,13 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
   const marksPending = useRef(new Set<string>());
   const requestId = useRef(0);
   const alive = useRef(true);
-  const week = iso(monday);
+  const selection = usePeriodSelection<HTMLDivElement>(mondayOf(today), importing || isPending('addSlot') || slots.some(slot => isPending(`slot:${slot.id}`)) || Object.values(marking).some(Boolean));
+  const week = selection.value;
   const currentWeek = useRef(week);
   currentWeek.current = week;
   const entries = entryResult.week === week ? entryResult.rows : [];
   const [error, setError] = useState('');
   const [form, setForm] = useState({ classId: '', kind: 'Lecture' as Slot['kind'], weekday: 1, start: '09:00', end: '11:00', room: '' });
-  const today = iso(new Date());
 
   useEffect(() => {
     alive.current = true;
@@ -50,12 +46,12 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
     let current = true;
     const id = ++requestId.current;
     setLoading(true); setReadError(''); setError('');
-    api.get<Entry[]>(`/api/attendance?from=${iso(monday)}&to=${iso(addDays(monday, 6))}`)
+    api.get<Entry[]>(`/api/attendance?from=${week}&to=${addDays(week, 6)}`)
       .then((rows) => { if (current && id === requestId.current) setEntryResult({ week, rows }); })
       .catch((e: Error) => { if (current && id === requestId.current) setReadError(e.message); })
       .finally(() => { if (current && id === requestId.current) setLoading(false); });
     return () => { current = false; };
-  }, [monday, reload]);
+  }, [week, reload]);
 
   if (!classes.length) return <>{importControls}<EmptyState>Import your portal timetable, or add a class first to enter class times.</EmptyState></>;
   const classId = form.classId || classes[0].id;
@@ -88,17 +84,18 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
       {error && <p className="bad" role="alert">{error}</p>}
       {loading && <p role="status">Loading attendance...</p>}
       {readError && <p className="bad" role="alert">{readError} <button className="link" onClick={() => setReload((value) => value + 1)}>Retry attendance</button></p>}
+      <div ref={selection.scope} onFocusCapture={selection.onFocusCapture} onBlurCapture={selection.onBlurCapture}>
       <div className="row">
-        <button className="btn ghost" onClick={() => setMonday(addDays(monday, -7))}>Previous week</button>
-        <button className="btn ghost" onClick={() => setMonday(mondayOf(new Date()))}>This week</button>
-        <button className="btn ghost" onClick={() => setMonday(addDays(monday, 7))}>Next week</button>
-        <b>{iso(monday)} to {iso(addDays(monday, 6))}</b>
+        <button className="btn ghost" onClick={() => selection.select(addDays(week, -7))}>Previous week</button>
+        <button className="btn ghost" onClick={() => selection.select(mondayOf(today))}>This week</button>
+        <button className="btn ghost" onClick={() => selection.select(addDays(week, 7))}>Next week</button>
+        <b>{week} to {addDays(week, 6)}</b>
       </div>
       {!slots.length && <EmptyState>No class times yet. Add your first one below.</EmptyState>}
       {DAYS.map((day, i) => {
         const todays = slots.filter((s) => s.weekday === i + 1).sort((a, b) => a.start.localeCompare(b.start));
         if (!todays.length) return null;
-        const date = iso(addDays(monday, i));
+        const date = addDays(week, i);
         return (
           <section className="timetable-day" key={day}>
             <h3>{day} <span className="mut">{date}{date === today ? ' (today)' : ''}</span></h3>
@@ -130,6 +127,7 @@ export default function Timetable({ classes, slots, addSlot, removeSlot, refresh
         );
       })}
 
+      </div>
       <h3>Add a class time</h3>
       <form className="row" onSubmit={async (e) => { e.preventDefault(); await addSlot({ ...form, classId }); }}>
         <fieldset className="app-content row" disabled={isPending('addSlot')} aria-busy={isPending('addSlot')}>

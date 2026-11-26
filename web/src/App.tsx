@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, type User } from './api';
 import { useStore } from './store';
+import { useMalaysiaDay } from './useMalaysiaDay';
 import { daysLeft, type Tab } from './util';
 import { useDeadlineNotifications } from './notifications';
 import { useUserSession, type UpdateUser, type UserUpdateSource } from './useUserSession';
@@ -110,6 +111,7 @@ function Shell({ user, setUser, updateUser, pendingUpdates, isUserPending, onlin
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const toastId = useRef(0);
   const store = useStore();
+  const today = useMalaysiaDay(sessionReady);
   const profileEditor = useProfileEditor(user, updateUser);
   const summarySettings = `${user.courseType}:${user.semesterStart}:${user.semesterWeeks}`;
   const previousSummarySettings = useRef(summarySettings);
@@ -119,7 +121,7 @@ function Shell({ user, setUser, updateUser, pendingUpdates, isUserPending, onlin
     void store.refreshSummary();
   }, [summarySettings]);
   const notifications = useDeadlineNotifications(user.id, store.tasks, user.reminderDays, sessionReady);
-  const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due) < 0 || daysLeft(task.due) <= user.reminderDays)).length;
+  const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due, today) < 0 || daysLeft(task.due, today) <= user.reminderDays)).length;
   useEffect(() => listenForToasts((message) => setToast({ id: ++toastId.current, message })), []);
   useEffect(() => {
     if (!toast) return;
@@ -137,11 +139,11 @@ function Shell({ user, setUser, updateUser, pendingUpdates, isUserPending, onlin
       {loadErrors.length > 0 && <p className="banner" role="alert">Could not load {loadErrors.map(([key]) => key).join(', ')}. <button className="link" onClick={store.retryLoad} disabled={Object.values(store.loads).some((load) => load.loading)}>Retry loading</button></p>}
       <fieldset className="app-content" disabled={!online} aria-label={online ? undefined : 'Read-only while offline'}>
         {loading ? <LoadingState /> : unavailable ? <p role="status">Some data is unavailable. Retry loading to continue.</p>
-          : tab === 'dash' ? <Dashboard name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
+          : tab === 'dash' ? <Dashboard today={today} name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
           : tab === 'classes' ? <Classes {...store} />
-          : tab === 'tasks' ? <Tasks {...store} />
-          : tab === 'timetable' ? <Timetable {...store} updateUser={updateUser} />
-          : tab === 'progress' ? <Progress {...store} user={user} saving={pendingUpdates.has('semester')} isUserPending={isUserPending} updateUser={updateUser} go={setTab} />
+          : tab === 'tasks' ? <Tasks {...store} today={today} />
+          : tab === 'timetable' ? <Timetable {...store} today={today} updateUser={updateUser} />
+          : tab === 'progress' ? <Progress {...store} today={today} user={user} saving={pendingUpdates.has('semester')} isUserPending={isUserPending} updateUser={updateUser} go={setTab} />
           : <Profile user={user} editor={profileEditor} setUser={setUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
       </fieldset>
     </main>{toast && <p key={toast.id} className="toast" role="status">{toast.message}</p>}</>;

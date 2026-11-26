@@ -3,23 +3,23 @@ import { type Course, type User } from '../api';
 import type { UpdateUser, UserUpdateSource } from '../useUserSession';
 import type { Store } from '../store';
 import type { Tab } from '../util';
-import { CALENDAR_LABEL, SEMESTERS, currentSemester, isoToday, kind, phase, teachingEnd } from '../calendar';
+import { CALENDAR_LABEL, SEMESTERS, currentSemester, kind, phase, teachingEnd } from '../calendar';
 import { calculateCgpa, calculateGpa, neededAverage } from '../gradeCalc';
 import { LETTER_GRADES, type LetterGrade } from '../gradeScale';
+import { dayDifference } from '../dateOnly';
 import EmptyState from '../EmptyState';
 import { showToast } from '../toast';
 
-type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse' | 'isPending' | 'loads'> & { user: User; updateUser: UpdateUser; saving: boolean; isUserPending: (source: UserUpdateSource) => boolean; go: (t: Tab) => void };
+type Props = Pick<Store, 'classes' | 'tasks' | 'summary' | 'courses' | 'addCourse' | 'patchCourse' | 'removeCourse' | 'isPending' | 'loads'> & { today: string; user: User; updateUser: UpdateUser; saving: boolean; isUserPending: (source: UserUpdateSource) => boolean; go: (t: Tab) => void };
 const hrs = (n: number) => `${n} hour${n === 1 ? '' : 's'}`;
-const weekLabel = (start: string, weeks: number) => {
+const weekLabel = (start: string, weeks: number, today: string) => {
   if (!start) return null;
-  const now = new Date();
-  const days = Math.floor((new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() - new Date(`${start}T00:00:00`).getTime()) / 864e5);
+  const days = dayDifference(today, start);
   const week = Math.floor(days / 7) + 1;
   return week < 1 ? `This semester starts in ${-days} day${days === -1 ? '' : 's'}.` : week > weeks ? `The ${weeks} teaching weeks are over.` : `Week ${week} of ${weeks}.`;
 };
 
-export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, isPending, loads, user, updateUser, saving, isUserPending, go }: Props) {
+export default function Progress({ classes, tasks, summary, courses, addCourse, patchCourse, removeCourse, isPending, loads, today, user, updateUser, saving, isUserPending, go }: Props) {
   const [targets, setTargets] = useState<Record<string, number>>({});
   const [courseForm, setCourseForm] = useState({ semesterLabel: 'Semester 1', courseName: '', creditHours: 3, grade: '' });
   const [cgpaTarget, setCgpaTarget] = useState(3.5);
@@ -38,7 +38,7 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
     } catch (failure) { if (alive.current) setSettingsError((failure as Error).message); }
   };
   const unsaved = semesterDraft.semesterStart !== user.semesterStart || semesterDraft.semesterWeeks !== user.semesterWeeks;
-  const cur = currentSemester(isoToday());
+  const cur = currentSemester(today);
   const preset = summary ? SEMESTERS.find((s) => s.start === summary.semesterStart && s.weeks === summary.weeks) : undefined;
   const cgpa = calculateCgpa(courses);
   const need = neededAverage(cgpa, cgpaTarget, futureCredits);
@@ -113,7 +113,7 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
       ) : (
         <>
           {cur
-            ? <p>{CALENDAR_LABEL}: today is in the <b>{cur.name}</b>, a {kind(cur)} semester. <b>{phase(cur, isoToday())}.</b></p>
+            ? <p>{CALENDAR_LABEL}: today is in the <b>{cur.name}</b>, a {kind(cur)} semester. <b>{phase(cur, today)}.</b></p>
             : <p className="mut">The {CALENDAR_LABEL} has no semester running today. Set the start date yourself once the next one is published.</p>}
           <fieldset className="app-content row" disabled={saving} aria-busy={saving}>
             <label>TAR UMT semester
@@ -140,7 +140,7 @@ export default function Progress({ classes, tasks, summary, courses, addCourse, 
           <p role="status">{saving ? 'Saving attendance settings...' : unsaved ? 'Unsaved attendance settings.' : 'Attendance settings saved.'} Saved semester start: {user.semesterStart || 'not set'}.</p>
           {settingsError && <p className="bad" role="alert">{settingsError} <button className="link" disabled={saving} onClick={() => void update(semesterDraft)}>Retry settings</button></p>}
           <p className="mut">
-            Requirement: {summary.requiredPercent}% for {user.courseType} courses. {weekLabel(summary.semesterStart, summary.weeks) ?? "Set the start date so only this semester's classes are counted."}
+            Requirement: {summary.requiredPercent}% for {user.courseType} courses. {weekLabel(summary.semesterStart, summary.weeks, today) ?? "Set the start date so only this semester's classes are counted."}
           </p>
           {!summary.classes.length && <p className="mut">No class times yet. Add them in <button className="link" onClick={() => go('timetable')}>Timetable</button>.</p>}
           {summary.classes.map((a) => {
