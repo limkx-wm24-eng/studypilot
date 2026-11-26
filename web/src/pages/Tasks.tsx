@@ -73,16 +73,20 @@ function TaskCalendar({ tasks, patchTask }: Pick<Props, 'patchTask'> & { tasks: 
 
   return <section className="calendar" aria-label="Task deadline calendar">
     <div className="calendar-head"><div><button className="btn ghost" aria-label="Previous month" onClick={() => move(-1)}>Previous</button><button className="btn ghost" aria-label="This month" onClick={() => setMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}>This month</button><button className="btn ghost" aria-label="Next month" onClick={() => move(1)}>Next</button></div><h2 aria-live="polite">{month.toLocaleString(undefined, { month: 'long', year: 'numeric' })}</h2><label className="calendar-option"><input type="checkbox" checked={sundayFirst} onChange={(event) => setSundayFirst(event.target.checked)} /> Sunday first</label></div>
-    <div className="calendar-grid" role="grid" aria-label={`${month.toLocaleString(undefined, { month: 'long', year: 'numeric' })} deadlines`}>
-      {labels.map((label) => <div className="calendar-weekday" role="columnheader" key={label}>{label}</div>)}
-      {cells.map((day, index) => {
-        if (day < 1 || day > days) return <div className="calendar-day empty" role="gridcell" key={`empty-${index}`} aria-hidden="true" />;
+    <div className="calendar-scroll" role="region" aria-label="Calendar dates" tabIndex={0}>
+    <table className="calendar-table" aria-label={`${month.toLocaleString(undefined, { month: 'long', year: 'numeric' })} deadlines`}>
+      <thead><tr>{labels.map((label) => <th className="calendar-weekday" scope="col" id={`calendar-weekday-${label}`} key={label}>{label}</th>)}</tr></thead>
+      <tbody>{Array.from({ length: cells.length / 7 }, (_, week) => <tr key={week}>{cells.slice(week * 7, week * 7 + 7).map((day, column) => {
+        const index = week * 7 + column;
+        const headers = `calendar-weekday-${labels[column]}`;
+        if (day < 1 || day > days) return <td className="calendar-day empty" headers={headers} key={`empty-${index}`} />;
         const key = dateKey(new Date(month.getFullYear(), month.getMonth(), day));
         const dayTasks = dates.get(key) ?? [];
         const shown = expanded.includes(key) ? dayTasks : dayTasks.slice(0, 3);
         const weekend = [0, 6].includes(new Date(`${key}T00:00:00`).getDay());
-        return <div className={`calendar-day ${key === today ? 'today' : ''} ${weekend ? 'weekend' : ''}`} role="gridcell" aria-label={`${key}, ${dayTasks.length} tasks`} key={key}><b>{day}</b><div className="calendar-chips">{shown.map((task) => <button className={`calendar-chip t-${task.type}`} key={task.id} onClick={() => patchTask(task.id, { status: task.status === 'Complete' ? 'Not started' : 'Complete' })} aria-label={`${task.name}, ${task.type}, due ${task.due}. ${task.status === 'Complete' ? 'Mark not started' : 'Mark complete'}`}>{task.name}</button>)}</div>{dayTasks.length > shown.length && <button className="more" onClick={() => setExpanded([...expanded, key])}>+{dayTasks.length - shown.length} more</button>}</div>;
-      })}
+        return <td className={`calendar-day ${key === today ? 'today' : ''} ${weekend ? 'weekend' : ''}`} headers={headers} aria-label={`${key}, ${dayTasks.length} tasks`} key={key}><b>{day}</b><div className="calendar-chips">{shown.map((task) => <button className={`calendar-chip t-${task.type}`} key={task.id} onClick={() => patchTask(task.id, { status: task.status === 'Complete' ? 'Not started' : 'Complete' })} aria-label={`${task.name}, ${task.type}, due ${task.due}. ${task.status === 'Complete' ? 'Mark not started' : 'Mark complete'}`}>{task.name}</button>)}</div>{dayTasks.length > shown.length && <button className="more" aria-label={`Show ${dayTasks.length - shown.length} more tasks on ${key}`} onClick={() => setExpanded([...expanded, key])}>+{dayTasks.length - shown.length} more</button>}</td>;
+      })}</tr>)}</tbody>
+    </table>
     </div>
   </section>;
 }
