@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomBytes, scrypt } from 'node:crypto';
 import { legacyHash } from './support/legacyPassword.ts';
 import { HashQueue, PasswordQueueFull, PasswordService, PASSWORD_POLICY, needsPasswordUpgrade, passwordQueue, hashPassword, checkPassword } from '../src/passwords.js';
+import { strongPasswordFixture } from './support/strongPassword.ts';
 
 test('passwords: async versioned hashes, legacy compatibility, incorrect passwords and conservative upgrades', async () => {
   const legacy = legacyHash('synthetic-password');
@@ -28,11 +30,12 @@ test('passwords: malformed, excessive-cost and unsupported hashes are rejected b
 
 test('passwords: legacy, current, older, malformed and missing login hashes do equivalent bounded work', async () => {
   const calls: number[] = [];
-  const service = new PasswordService(new HashQueue(), async (_password, _salt, parameters) => { calls.push(parameters.N); return Buffer.alloc(64); });
+  const service = new PasswordService(new HashQueue(), async (_password, _salt, parameters) => { calls.push(parameters.N * parameters.p); return Buffer.alloc(64); });
   const tail = `${'00'.repeat(16)}$${'ff'.repeat(64)}`;
   for (const [stored, expected] of [
-    [undefined, [16384]], ['invalid', [16384]], [`${'00'.repeat(16)}:${'ff'.repeat(64)}`, [16384]],
-    [`scrypt$v1$N=8192,r=8,p=1$${tail}`, [8192, 8192]], [`scrypt$v1$N=16384,r=8,p=1$${tail}`, [16384]],
+    [undefined, [81920]], ['invalid', [81920]], [`${'00'.repeat(16)}:${'ff'.repeat(64)}`, [16384, 65536]],
+    [`scrypt$v1$N=8192,r=8,p=1$${tail}`, [8192, 73728]], [`scrypt$v1$N=16384,r=8,p=1$${tail}`, [16384, 65536]],
+    [`scrypt$v1$N=16384,r=8,p=5$${tail}`, [81920]],
   ] as const) {
     calls.length = 0; assert.equal(await service.verifyLogin('incorrect', stored), false);
     assert.deepEqual(calls, expected);
@@ -49,7 +52,7 @@ test('passwords: one shared queue covers hash, verify, dummy and upgrade work, b
   };
   const a = new PasswordService(queue, derive), b = new PasswordService(queue, derive);
   const current = `scrypt$v1$N=16384,r=8,p=1$${'00'.repeat(16)}$${'00'.repeat(64)}`;
-  const older = `scrypt$v1$N=8192,r=8,p=1$${'00'.repeat(16)}$${'00'.repeat(64)}`;
+  const older = `scrypt$v1$N=8192,r=8,p=1$${'00'.repeat(16)}$${'ff'.repeat(64)}`;
   const work = [a.hash('synthetic'), b.verify('synthetic', current), a.verifyLogin('synthetic'), b.verifyLogin('synthetic', older), a.hash('synthetic-upgrade')];
   assert.deepEqual(queue.status, { active: 2, waiting: 3 });
   await assert.rejects(b.verifyLogin('synthetic'), PasswordQueueFull);
@@ -62,4 +65,64 @@ test('passwords: one shared queue covers hash, verify, dummy and upgrade work, b
   await assert.rejects(broken.hash('synthetic'));
   assert.deepEqual(queue.status, { active: 0, waiting: 0 });
   assert.equal(await queue.run(async () => 42), 42);
+});
+
+test('P1 passwords: stronger v1 verifies without automatic downgrade; explicit resets preserve the profile', async () => {
+  const service = new PasswordService();
+  const strong = await strongPasswordFixture();
+  assert.equal(await service.verify('synthetic-password-123', strong), true);
+  assert.equal(await service.verify('incorrect-synthetic', strong), false);
+  assert.equal(await service.verifyLogin('synthetic-password-123', strong), true);
+  assert.equal(needsPasswordUpgrade(strong), false);
+  const reset = await service.hashForReset('new-synthetic-password', strong);
+  assert.ok(reset.startsWith('scrypt$v1$N=16384,r=8,p=5$'));
+  assert.ok(reset !== strong);
+  assert.equal(await service.verify('new-synthetic-password', reset), true);
+  assert.equal(await service.verify('synthetic-password-123', reset), false);
+  const ordinary = await service.hashForReset('new-synthetic-password', await service.hash('synthetic-password-123'));
+  assert.ok(ordinary.startsWith('scrypt$v1$N=16384,r=8,p=1$'));
+});
+
+test('P1 passwords: older native v1 verifies correct passwords and rejects incorrect passwords with padding', async () => {
+  const salt=randomBytes(16);
+  const key=await new Promise<Buffer>((resolve,reject)=>scrypt('synthetic-password-123',salt,64,{N:8192,r:8,p:1,maxmem:34*1024*1024},(error,key)=>error?reject(error):resolve(key)));
+  const older=`scrypt$v1$N=8192,r=8,p=1$${salt.toString('hex')}$${key.toString('hex')}`;
+  const service=new PasswordService();
+  assert.equal(await service.verify('synthetic-password-123',older),true);
+  assert.equal(await service.verify('incorrect-synthetic',older),false);
+  assert.equal(await service.verifyLogin('incorrect-synthetic',older),false);
+  assert.equal(needsPasswordUpgrade(older),true);
+});
+
+test('P1 passwords: stronger parser rejects unlisted combinations and invalid encodings before native work', async () => {
+  let calls = 0;
+  const service = new PasswordService(new HashQueue(), async () => { calls++; return Buffer.alloc(64); });
+  const tail = `${'00'.repeat(16)}$${'ff'.repeat(64)}`;
+  for (const value of [
+    `scrypt$v1$N=8192,r=8,p=5$${tail}`, `scrypt$v1$N=32768,r=8,p=3$${tail}`,
+    `scrypt$v1$N=16384,r=9,p=5$${tail}`, `scrypt$v1$N=16384,r=8,p=999999$${tail}`,
+    `scrypt$v1$N=16384,r=8,p=5$${'gg'.repeat(16)}$${'ff'.repeat(64)}`,
+    `scrypt$v1$N=16384,r=8,p=5$${'00'.repeat(16)}$${'gg'.repeat(64)}`,
+    `scrypt$v1$N=16384,r=8,p=5$${'00'.repeat(15)}$${'ff'.repeat(64)}`,
+    `scrypt$v1$N=16384,r=8,p=5$${'00'.repeat(16)}$${'ff'.repeat(63)}`,
+    `scrypt$v1$N=16384,r=8,p=5$${tail}\n`, 'x'.repeat(10000),
+  ]) assert.equal(await service.verify('synthetic', value), false);
+  assert.equal(calls, 0);
+});
+
+test('P1 passwords: padding errors propagate, release the shared permit, and do not prevent recovery', async () => {
+  const queue = new HashQueue(); let fail = true;
+  const service = new PasswordService(queue, async (_password, _salt, parameters) => {
+    if (parameters.p === 4 && fail) throw new Error('Synthetic padding failure');
+    return Buffer.alloc(64);
+  });
+  const stored = `scrypt$v1$N=16384,r=8,p=1$${'00'.repeat(16)}$${'ff'.repeat(64)}`;
+  await assert.rejects(service.verifyLogin('incorrect', stored), /Synthetic padding failure/);
+  assert.deepEqual(queue.status, { active: 0, waiting: 0 }); fail = false;
+  assert.equal(await service.verifyLogin('incorrect', stored), false);
+  const broken = new PasswordService(queue, async () => { throw new Error('Synthetic native failure'); });
+  const strong = `scrypt$v1$N=16384,r=8,p=5$${'00'.repeat(16)}$${'ff'.repeat(64)}`;
+  await assert.rejects(broken.verify('incorrect', strong));
+  await assert.rejects(broken.hashForReset('synthetic', strong));
+  assert.deepEqual(queue.status, { active: 0, waiting: 0 });
 });

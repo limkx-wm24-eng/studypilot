@@ -259,10 +259,12 @@ export function authRoutes(
     const tokenHash = sha(parsed.data.token);
     // Check before expensive work, then re-check atomically after hashing. A full
     // hash queue must not consume the token or hold a database transaction open.
-    if (!await db.get("SELECT id FROM auth_tokens WHERE token_hash = ? AND purpose = 'password_reset' AND used_at IS NULL AND expires_at > ?", [tokenHash, Date.now()])) {
+    const account = await db.get("SELECT u.password_hash FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.purpose = 'password_reset' AND t.used_at IS NULL AND t.expires_at > ?", [tokenHash, Date.now()]);
+    if (!account) {
       return void res.status(400).json({ error: RESET_INVALID_MESSAGE });
     }
-    const nextHash = await passwordService.hash(parsed.data.newPassword);
+    const originalHash = String(account.password_hash);
+    const nextHash = await passwordService.hashForReset(parsed.data.newPassword, originalHash);
     const now = Date.now();
     const reset = await db.transaction(async (transaction) => {
       const token = await transaction.get(
@@ -270,6 +272,10 @@ export function authRoutes(
         [tokenHash, now],
       );
       if (!token) return false;
+      // A concurrent password/profile change invalidates this attempt without
+      // consuming its token. No KDF work occurs while holding this row lock.
+      const locked = await transaction.run('UPDATE users SET id = id WHERE id = ? AND password_hash = ?', [token.user_id as string, originalHash]);
+      if (locked.changes !== 1) return false;
       const marked = await transaction.run(
         "UPDATE auth_tokens SET used_at = ? WHERE id = ? AND purpose = 'password_reset' AND used_at IS NULL AND expires_at > ?",
         [now, token.id as string, now],

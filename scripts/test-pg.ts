@@ -13,6 +13,7 @@ for (const args of [
   ['test/migrations.test.ts', 'test/migrationReliability.test.ts'],
   ['--test-name-pattern=timetable import|database rejects', 'test/api.test.ts'],
   ['test/securityReview.test.ts', 'test/securityFixes.test.ts', 'test/stage2Auth.test.ts'],
+  ['test/passwordCompatibility.test.ts'],
   ['test/stageAData.test.ts', 'test/stageADates.test.ts', 'test/stageAPatch.test.ts'],
   ['test/stageCLegacy.test.ts'],
 ]) {

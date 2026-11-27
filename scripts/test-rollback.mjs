@@ -104,8 +104,21 @@ try{
     const final=snapshot();assert.equal(final.dataChecksum,recovered.dataChecksum);assert.deepEqual(final.ledger,recovered.ledger);
     for(const email of Object.keys(final.records))intact(recovered,final,email);
     assert.equal(request('/api/tasks','GET',undefined,finalCookie).data.find(row=>row.id===task.data.id).grade,91);
+    rpc({op:'guards',klass:fixture.klass});
+    // Preserve the complete original R-04 handoff above. Separately model a
+    // future stronger writer with a fixture, then start this reader checkpoint.
+    phase=`${dialect}: reader-compatible stronger fixture recovery`;
+    rpc({op:'strong',email:'new@example.test'});const future=snapshot();
+    assert.equal(future.records['new@example.test'].profile,'stronger');stopApp();
+    await launch(candidate,dialect);const strongCookie=login('new@example.test');
+    const compatible=snapshot();intact(future,compatible,'new@example.test');
+    assert.equal(compatible.dataChecksum,future.dataChecksum);assert.deepEqual(compatible.ledger,future.ledger);
+    assert.equal(request('/api/auth/me','GET',undefined,newCookie).status,200);
+    assert.equal(request(`/api/tasks/${fixture.task}`,'PATCH',{grade:99},strongCookie).status,404);
+    assert.equal(request(`/api/tasks/${task.data.id}`,'PATCH',{grade:92},strongCookie).status,200);
+    assert.equal(request('/api/attendance/summary','GET',undefined,strongCookie).status,200);
     rpc({op:'guards',klass:fixture.klass});stopApp();
-    const result={dialect,status:'passed',legacyAndOlderProfilesUpgraded:true,currentRecordsUnchanged:true,sessionsAndOwnership:true,studyDataReadWrite:true,guardsAndForeignKeys:true,oldMainNegativeStatus:500,candidateRollbackCandidate:true,serializedCompletedMigrationsRequired:true};
+    const result={dialect,status:'passed',legacyAndOlderProfilesUpgraded:true,currentRecordsUnchanged:true,sessionsAndOwnership:true,studyDataReadWrite:true,guardsAndForeignKeys:true,oldMainNegativeStatus:500,candidateRollbackCandidate:true,serializedCompletedMigrationsRequired:true,strongerReaderRecovery:true,strongerAutomaticDowngrade:false};
     results.push(result);console.log(JSON.stringify(result));
   }
   console.log(`Recovery evidence: ${artifacts}`);

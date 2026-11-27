@@ -1,6 +1,6 @@
 // Private stdin/stdout RPC for disposable Docker fixtures. The orchestrator
 // captures responses in memory; cookies and record checksums are never logged.
-import { randomBytes, randomUUID, scryptSync, createHash } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, scrypt, createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import { openDb } from '/app/dist/db.js';
 
@@ -32,9 +32,16 @@ try{
       await db.run('INSERT INTO attendance(slot_id,date,status) VALUES(?,?,?)',[slot,'2026-11-02','present']);
       await db.run('INSERT INTO courses(id,user_id,semester_label,course_name,credit_hours,grade) VALUES(?,?,?,?,?,?)',[course,ids.legacy,'Synthetic semester','Synthetic legacy course',3,'A']);
       result={klass,task,slot,course};
+    }else if(command.op==='strong'){
+      // Explicit future-writer fixture, never a production route/policy switch.
+      const salt=randomBytes(16);
+      const key=await new Promise((resolve,reject)=>scrypt('synthetic-recovery-123',salt,64,{N:16384,r:8,p:5,maxmem:34*1024*1024},(error,key)=>error?reject(error):resolve(key)));
+      const stored=`scrypt$v1$N=16384,r=8,p=5$${salt.toString('hex')}$${key.toString('hex')}`;
+      const updated=await db.run('UPDATE users SET password_hash=? WHERE email=?',[stored,command.email]);assert.equal(updated.changes,1);
+      result={seeded:true};
     }else if(command.op==='snapshot'){
       const records={};for(const row of await db.all('SELECT email,password_hash FROM users ORDER BY email')){
-        const value=String(row.password_hash),profile=value.startsWith('scrypt$v1$N=16384,r=8,p=1$')?'current':value.startsWith('scrypt$v1$N=8192,r=8,p=1$')?'older':'legacy';
+        const value=String(row.password_hash),profile=value.startsWith('scrypt$v1$N=16384,r=8,p=5$')?'stronger':value.startsWith('scrypt$v1$N=16384,r=8,p=1$')?'current':value.startsWith('scrypt$v1$N=8192,r=8,p=1$')?'older':'legacy';
         records[row.email]={profile,checksum:createHash('sha256').update(value).digest('hex')};
       }
       const data={};for(const table of ['classes','tasks','slots','attendance','courses'])data[table]=await db.all(`SELECT * FROM ${table} ORDER BY 1`);
