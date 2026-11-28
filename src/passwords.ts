@@ -1,8 +1,7 @@
 import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 
-export const PASSWORD_POLICY = Object.freeze({ N: 16384, r: 8, p: 1 });
-// Reader-first checkpoint: this is supported, but is NOT the ordinary writer.
-export const STRONG_PASSWORD_PROFILE = Object.freeze({ N: 16384, r: 8, p: 5 });
+export const PASSWORD_POLICY = Object.freeze({ N: 16384, r: 8, p: 5 });
+export const STRONG_PASSWORD_PROFILE = PASSWORD_POLICY;
 export const PASSWORD_MAXMEM = 34 * 1024 * 1024;
 export const HASH_ACTIVE_LIMIT = 2;
 export const HASH_QUEUE_LIMIT = 8;
@@ -63,8 +62,8 @@ export class PasswordService {
   async hash(password: string): Promise<string> {
     return this.hashWithProfile(password, PASSWORD_POLICY);
   }
-  // Explicit reset exception for an already-strong account during recovery.
-  // Ordinary reset/registration/automatic upgrades still use hash() and p=1.
+  // Preserve the reader-first recovery guarantee for an already-strong account.
+  // All ordinary reset/registration/automatic upgrade writes now also use p=5.
   async hashForReset(password: string, stored: string): Promise<string> {
     return parse(stored)?.p === STRONG_PASSWORD_PROFILE.p
       ? this.hashWithProfile(password, STRONG_PASSWORD_PROFILE) : this.hash(password);

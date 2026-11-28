@@ -107,7 +107,7 @@ test('QA production sessions: cookie flags, hashed storage, fixation resistance,
 test('QA password hashing: random salts, bounded password inputs and versioned scrypt parameters', async (t) => {
   const one = await hashPassword('synthetic-password'), two = await hashPassword('synthetic-password');
   assert.notEqual(one, two);
-  assert.match(one, /^scrypt\$v1\$N=16384,r=8,p=1\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
+  assert.match(one, /^scrypt\$v1\$N=16384,r=8,p=5\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
   assert.equal(await checkPassword('synthetic-password', one), true);
   assert.equal(await checkPassword('incorrect-synthetic', one), false);
   const h = await securityHarness();

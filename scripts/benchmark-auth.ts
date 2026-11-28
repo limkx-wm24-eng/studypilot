@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes, scrypt } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt } from 'node:crypto';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 
 // This benchmark always uses synthetic accounts and in-memory SQLite.
@@ -10,12 +10,8 @@ process.env.STUDYPILOT_TEST_POSTGRES = '';
 const { securityHarness } = await import('../test/support/securityHarness.ts');
 const { PasswordService, HashQueue, AUTH_BUSY_MESSAGE } = await import('../src/passwords.ts');
 const queue=new HashQueue();
-const future=process.argv.includes('--future-writer-fixture');
-// Explicit benchmark fixture only: no application policy/configuration toggle.
-class FutureWriterFixture extends PasswordService {
-  override hash(password:string) { return super.hashForReset(password,`scrypt$v1$N=16384,r=8,p=5$${'00'.repeat(16)}$${'00'.repeat(64)}`); }
-}
-const h = await securityHarness(true, false, future?new FutureWriterFixture(queue):new PasswordService(queue));
+assert.ok(!process.argv.includes('--future-writer-fixture'),'Historical fixture benchmarks require the immutable P1-A source');
+const h = await securityHarness(true, false, new PasswordService(queue));
 const summarize = (values: number[]) => {
   const sorted=[...values].sort((a,b)=>a-b);
   return { samples:values.length,medianMs:sorted[Math.ceil(values.length*.5)-1],p95Ms:sorted[Math.ceil(values.length*.95)-1],maxMs:Math.max(...values) };
@@ -30,22 +26,30 @@ const sampler=setInterval(()=>{peakRss=Math.max(peakRss,process.memoryUsage().rs
 const loop=monitorEventLoopDelay({resolution:10});loop.enable();
 try {
   const a = await h.register();
-  const current=await fixture(16384,1),legacy=await fixture(16384,1,true),older=await fixture(8192,1),strong=await fixture(16384,5);
-  const allModes=[['registration',undefined],['normal-login',future?strong:current],['legacy-upgrade',legacy],['older-upgrade',older],['strong-login',strong],['current-failure',current],['legacy-failure',legacy],['older-failure',older],['strong-failure',strong],['malformed-failure','invalid'],['unknown-failure',undefined]] as const;
-  const modes=future?allModes.slice(0,3):allModes;
-  console.log(JSON.stringify({ environment:{node:process.version,platform:process.platform,constrainedMemoryMiB:process.constrainedMemory()/2**20 || null,database:'isolated in-memory SQLite',writer:future?'explicit synthetic future-writer fixture':'unchanged p=1 application writer'},warmups:3,samples:30 }));
+  const strong=String((await h.db.get('SELECT password_hash FROM users WHERE id=?',[a.user.id]))!.password_hash);
+  assert.ok(strong.startsWith('scrypt$v1$N=16384,r=8,p=5$'),'Actual registration must use the activated writer');
+  const current=await fixture(16384,1),legacy=await fixture(16384,1,true),older=await fixture(8192,1);
+  const modes=[['registration',undefined],['normal-login',strong],['legacy-upgrade',legacy],['older-upgrade',older],['p1-upgrade',current],['password-reset',strong],['weak-password-reset',current],['p1-failure',current],['legacy-failure',legacy],['older-failure',older],['strong-failure',strong],['malformed-failure','invalid'],['unknown-failure',undefined]] as const;
+  console.log(JSON.stringify({ environment:{node:process.version,platform:process.platform,constrainedMemoryMiB:process.constrainedMemory()/2**20 || null,database:'isolated in-memory SQLite',writer:'actual activated p=5 application writer'},warmups:3,samples:30 }));
   // Interleave modes to reduce thermal/load drift between failure categories.
   const measurements=new Map(modes.map(([mode])=>[mode,[] as number[]]));
   for (let i = 0; i < 33; i++) {
     for (const [mode,record] of modes) {
       if(record) await h.db.run('UPDATE users SET password_hash = ? WHERE id = ?', [record, a.user.id]);
       const failure = mode.endsWith('failure');
+      const resetting=mode.endsWith('reset');
+      let token:string|undefined;
+      if(resetting){token=randomUUID();await h.db.run('INSERT INTO auth_tokens(id,user_id,purpose,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)',[token,a.user.id,'password_reset',createHash('sha256').update(token).digest('hex'),Date.now()+60000,Date.now()]);}
+      const before=failure?{hash:String((await h.db.get('SELECT password_hash FROM users WHERE id=?',[a.user.id]))!.password_hash),sessions:Number((await h.db.get('SELECT COUNT(*) AS count FROM sessions'))!.count)}:undefined;
       const started = performance.now();
       const registration=mode==='registration';
-      const result = registration?await h.register():await h.send('POST', '/api/auth/login', { email: mode === 'unknown-failure' ? 'missing-benchmark@example.test' : a.email, password: failure ? 'incorrect-synthetic' : 'synthetic-password-123' }, undefined, { 'X-Forwarded-For': `198.18.${modes.findIndex(m=>m[0]===mode)}.${i+1}` });
+      const headers={ 'X-Forwarded-For': `198.18.${modes.findIndex(m=>m[0]===mode)}.${i+1}` };
+      const result = registration?await h.register():resetting?await h.send('POST','/api/auth/reset',{token,newPassword:'synthetic-password-123'},undefined,headers):await h.send('POST', '/api/auth/login', { email: mode === 'unknown-failure' ? 'missing-benchmark@example.test' : a.email, password: failure ? 'incorrect-synthetic' : 'synthetic-password-123' }, undefined,headers);
       assert.equal('status' in result?result.status:result.response.status,registration?201:failure?401:200,'Synthetic authentication benchmark status');
-      if('status' in result) await result.arrayBuffer();
-      if (i>=3) measurements.get(mode)!.push(performance.now() - started);
+      const body='status' in result?await result.json():undefined;
+      const elapsed=performance.now()-started;
+      if(before){assert.deepEqual(body,{error:'Invalid email or password'});assert.ok(String((await h.db.get('SELECT password_hash FROM users WHERE id=?',[a.user.id]))!.password_hash)===before.hash);assert.equal(Number((await h.db.get('SELECT COUNT(*) AS count FROM sessions'))!.count),before.sessions);}
+      if (i>=3) measurements.get(mode)!.push(elapsed);
     }
   }
   for(const [mode,values] of measurements) console.log(JSON.stringify({ mode, ...summarize(values) }));

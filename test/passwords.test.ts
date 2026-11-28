@@ -11,7 +11,7 @@ test('passwords: async versioned hashes, legacy compatibility, incorrect passwor
   assert.equal(await checkPassword('incorrect', legacy), false);
   assert.equal(needsPasswordUpgrade(legacy), true);
   const current = await hashPassword('synthetic-password');
-  assert.match(current, /^scrypt\$v1\$N=16384,r=8,p=1\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
+  assert.match(current, /^scrypt\$v1\$N=16384,r=8,p=5\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
   assert.equal(await checkPassword('synthetic-password', current), true);
   assert.equal(await checkPassword('incorrect', current), false);
   assert.equal(needsPasswordUpgrade(current), false);
@@ -80,7 +80,7 @@ test('P1 passwords: stronger v1 verifies without automatic downgrade; explicit r
   assert.equal(await service.verify('new-synthetic-password', reset), true);
   assert.equal(await service.verify('synthetic-password-123', reset), false);
   const ordinary = await service.hashForReset('new-synthetic-password', await service.hash('synthetic-password-123'));
-  assert.ok(ordinary.startsWith('scrypt$v1$N=16384,r=8,p=1$'));
+  assert.ok(ordinary.startsWith('scrypt$v1$N=16384,r=8,p=5$'));
 });
 
 test('P1 passwords: older native v1 verifies correct passwords and rejects incorrect passwords with padding', async () => {

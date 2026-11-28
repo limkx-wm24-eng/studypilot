@@ -48,14 +48,14 @@ test('Stage 2 auth: legacy and older versioned hashes upgrade only after a corre
     assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' })).status, 200);
     t.diagnostic(`Legacy-upgrade HTTP login ms: ${(performance.now() - start).toFixed(1)}`);
     const upgraded = String((await h.db.get('SELECT password_hash FROM users WHERE id = ?', [a.user.id]))!.password_hash);
-    assert.ok(upgraded !== legacy && upgraded.startsWith('scrypt$v1$N=16384,r=8,p=1$'));
+    assert.ok(upgraded !== legacy && upgraded.startsWith('scrypt$v1$N=16384,r=8,p=5$'));
     assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' })).status, 200);
     assert.ok((await h.db.get('SELECT password_hash FROM users WHERE id = ?', [a.user.id]))!.password_hash === upgraded);
     const salt = randomBytes(16);
     const key = scryptSync('synthetic-password-123', salt, 64, { N: 8192, r: 8, p: 1 });
     await h.db.run('UPDATE users SET password_hash = ? WHERE id = ?', [`scrypt$v1$N=8192,r=8,p=1$${salt.toString('hex')}$${key.toString('hex')}`, a.user.id]);
     assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' })).status, 200);
-    assert.ok(String((await h.db.get('SELECT password_hash FROM users WHERE id = ?', [a.user.id]))!.password_hash).startsWith('scrypt$v1$N=16384,r=8,p=1$'));
+    assert.ok(String((await h.db.get('SELECT password_hash FROM users WHERE id = ?', [a.user.id]))!.password_hash).startsWith('scrypt$v1$N=16384,r=8,p=5$'));
   } finally { await h.close(); }
 });
 

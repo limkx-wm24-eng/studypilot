@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { securityHarness } from './support/securityHarness.ts';
-import { strongPasswordFixture } from './support/strongPassword.ts';
+import { strongPasswordFixture, weakPasswordFixture } from './support/strongPassword.ts';
 import { PasswordService, HashQueue, AUTH_BUSY_MESSAGE } from '../src/passwords.js';
 
 const defer = () => { let resolve!: () => void; const promise = new Promise<void>(done => {resolve=done;});return {promise,resolve}; };
@@ -35,7 +35,7 @@ test('P1 auth: strong login preserves records, sessions, ownership, study data, 
     await assert.rejects(h.db.run('UPDATE classes SET name=? WHERE id=?',['x'.repeat(61),data.klass.id]));
     await assert.rejects(h.db.run('INSERT INTO classes(id,user_id,name,color) VALUES(?,?,?,?)',[randomUUID(),randomUUID(),'Synthetic orphan','#112233']));
     assert.deepEqual(await h.db.all('SELECT id FROM schema_migrations ORDER BY id'),ledger);
-    assert.ok((await stored(h,b.user.id)).startsWith('scrypt$v1$N=16384,r=8,p=1$'));
+    assert.ok((await stored(h,b.user.id)).startsWith('scrypt$v1$N=16384,r=8,p=5$'));
   } finally {await h.close();}
 });
 
@@ -44,10 +44,10 @@ test('P1 auth: reset retains stronger profile, ordinary writer stays current and
   try {
     for(const strongAccount of [false,true]) {
       const a=await h.register();
-      if(strongAccount) await h.db.run('UPDATE users SET password_hash=? WHERE id=?',[await strongPasswordFixture(),a.user.id]);
+      await h.db.run('UPDATE users SET password_hash=? WHERE id=?',[strongAccount?await strongPasswordFixture():await weakPasswordFixture(),a.user.id]);
       const token=await issueReset(h,a.user.id);
       assert.equal((await h.send('POST','/api/auth/reset',{token,newPassword:'new-synthetic-password'})).status,200);
-      assert.ok((await stored(h,a.user.id)).startsWith(`scrypt$v1$N=16384,r=8,p=${strongAccount?5:1}$`));
+      assert.ok((await stored(h,a.user.id)).startsWith('scrypt$v1$N=16384,r=8,p=5$'));
       assert.equal((await h.send('GET','/api/auth/me',undefined,a.cookie)).status,401);
       assert.equal((await h.send('POST','/api/auth/login',{email:a.email,password:'new-synthetic-password'})).status,200);
       assert.equal((await h.send('POST','/api/auth/reset',{token,newPassword:'another-synthetic-password'})).status,400);

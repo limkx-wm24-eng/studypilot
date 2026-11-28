@@ -16,11 +16,16 @@ try{
     const response=await fetch(`http://127.0.0.1:3000${command.path}`,{method:command.method??'GET',headers:{...(command.data!==undefined?{'Content-Type':'application/json'}:{}),...(command.cookie?{Cookie:command.cookie}:{})},body:command.data===undefined?undefined:JSON.stringify(command.data)});
     const body=await response.text();let data;try{data=JSON.parse(body);}catch{data=body;}
     result={status:response.status,data,cookies:response.headers.getSetCookie()};
+  }else if(command.op==='reader'){
+    // Reader-only negative evidence: no database is opened or mounted.
+    const {checkPassword}=await import('/app/dist/passwords.js');
+    result={verified:await checkPassword('synthetic-recovery-123',command.stored)};
   }else{
     db=await openDb(process.env.DB_PATH,{migrationsThrough:command.op==='seed'?9:undefined});
     if(command.op==='seed'){
       const ids={};
-      for(const [label,N,versioned] of [['legacy',16384,false],['rollback-legacy',16384,false],['rollback-older',8192,true]]){
+      const accounts=[['legacy',16384,false],['rollback-legacy',16384,false],['rollback-older',8192,true],...(command.writerScenario?[['writer-current',16384,true],['recovery-weak',16384,true],['dormant',8192,true]]:[])];
+      for(const [label,N,versioned] of accounts){
         const salt=randomBytes(16),key=scryptSync('synthetic-recovery-123',salt,64,{N,r:8,p:1});
         const stored=versioned?`scrypt$v1$N=${N},r=8,p=1$${salt.toString('hex')}$${key.toString('hex')}`:`${salt.toString('hex')}:${key.toString('hex')}`;
         ids[label]=randomUUID();await db.run('INSERT INTO users(id,email,password_hash) VALUES(?,?,?)',[ids[label],`${label}@example.test`,stored]);
@@ -32,6 +37,13 @@ try{
       await db.run('INSERT INTO attendance(slot_id,date,status) VALUES(?,?,?)',[slot,'2026-11-02','present']);
       await db.run('INSERT INTO courses(id,user_id,semester_label,course_name,credit_hours,grade) VALUES(?,?,?,?,?,?)',[course,ids.legacy,'Synthetic semester','Synthetic legacy course',3,'A']);
       result={klass,task,slot,course};
+    }else if(command.op==='reset-token'){
+      const user=await db.get('SELECT id FROM users WHERE email=?',[command.email]);assert.ok(user);
+      const token=randomBytes(32).toString('base64url'),now=Date.now();
+      await db.run('INSERT INTO auth_tokens(id,user_id,purpose,token_hash,expires_at,created_at) VALUES(?,?,?,?,?,?)',[randomUUID(),user.id,'password_reset',createHash('sha256').update(token).digest('hex'),now+60000,now]);
+      result={token};
+    }else if(command.op==='record'){
+      result={stored:(await db.get('SELECT password_hash FROM users WHERE email=?',[command.email])).password_hash};
     }else if(command.op==='strong'){
       // Explicit future-writer fixture, never a production route/policy switch.
       const salt=randomBytes(16);
