@@ -47,7 +47,7 @@ function inspect(code) {
     assert.equal(route.handler?.strategy, 'NetworkOnly', 'Runtime caching strategies require privacy review; keep runtime routes NetworkOnly');
   }
   for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD']) {
-    for (const path of ['/api', '/api/', '/api/auth/me', '/api/classes?synthetic=1', '/api/future-private-route', '/API/tasks']) {
+    for (const path of ['/api', '/api/', '/api/config', '/api/auth/me', '/api/classes?synthetic=1', '/api/future-private-route', '/API/tasks']) {
       const url = new URL(path, 'https://synthetic.test');
       const matches = routes.filter((r) => r.method === method && typeof r.match === 'function' && r.match({ url, request: { method }, sameOrigin: true }));
       assert.ok(matches.length, `${method} ${path} needs an explicit network-only route`);

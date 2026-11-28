@@ -1,6 +1,7 @@
 // TAR UMT Academic Calendar 2025/2026 (undergraduate and postgraduate programmes), November 2025 intake.
 // Source: https://tarc.edu.my/files/admissions/428AACD0-B722-4DA9-BAAB-05BA59158557.pdf
 // The calendar says its dates may change. Update this list when the 2026/2027 calendar is published.
+import { addDays, dayDifference, malaysiaDay } from './dateOnly';
 export type Semester = {
   name: string;
   session: string;
@@ -20,16 +21,10 @@ export const SEMESTERS: Semester[] = [
   { name: 'Semester 202609', session: '202609', weeks: 7, start: '2026-11-02', exam: null, holidays: null },
 ];
 
-const DAY = 864e5;
-const ms = (d: string) => new Date(`${d}T00:00:00Z`).getTime();
-
-export const isoToday = () => {
-  const n = new Date();
-  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
-};
+export const isoToday = malaysiaDay;
 export const kind = (s: Semester) => (s.weeks === 7 ? 'short' : 'long');
 
-export const teachingEnd = (s: Semester) => new Date(ms(s.start) + (s.weeks * 7 - 1) * DAY).toISOString().slice(0, 10);
+export const teachingEnd = (s: Semester) => addDays(s.start, s.weeks * 7 - 1);
 
 /** Only identify dates covered by a known teaching, examination or holiday range. */
 export const currentSemester = (today: string) => [...SEMESTERS].reverse().find((s) => today >= s.start && today <= (s.holidays?.[1] ?? s.exam?.[1] ?? teachingEnd(s)));
@@ -37,7 +32,7 @@ export const currentSemester = (today: string) => [...SEMESTERS].reverse().find(
 /** Where a date falls inside a semester. */
 export function phase(s: Semester, today: string): string {
   if (today < s.start) return 'Not started';
-  const week = Math.floor((ms(today) - ms(s.start)) / DAY / 7) + 1;
+  const week = Math.floor(dayDifference(today, s.start) / 7) + 1;
   if (week <= s.weeks) return `Teaching week ${week} of ${s.weeks}`;
   if (s.holidays && today >= s.holidays[0] && today <= s.holidays[1]) return 'Semester holidays';
   if (!s.exam) return s.holidays ? 'Exam dates unknown' : 'Exam and holiday dates unknown';

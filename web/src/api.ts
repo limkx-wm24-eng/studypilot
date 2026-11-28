@@ -1,3 +1,6 @@
+import { publishSessionEvent } from './sessionEvents';
+import { advanceSession, reportSessionFailure, sessionStamp } from './sessionGuard';
+
 export const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
 export const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'] as const;
 export const STATUSES = ['Not started', 'In progress', 'Complete'] as const;
@@ -28,22 +31,30 @@ export type ClassSummary = {
 export type Summary = { requiredPercent: number | null; weeks: number; semesterStart: string; classes: ClassSummary[] };
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly conflicts: { row: number; with: number | string }[] = []) { super(message); }
+  constructor(message: string, readonly status: number, readonly conflicts: { row: number; with: number | string; reason?: 'metadata'; fields?: string[]; existing?: { kind: string; room: string }; incoming?: { kind: string; room: string } }[] = []) { super(message); }
 }
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+  const stamp = sessionStamp();
+  const path = new URL(url, window.location.href).pathname;
   if (!navigator.onLine) throw new Error(method === 'GET' ? 'You are offline. Showing saved app content only.' : 'You are offline. Changes are disabled until you reconnect.');
   const res = await fetch(url, {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  if (res.status === 401) reportSessionFailure(stamp, method, path);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new ApiError(data.error ?? 'Something went wrong', res.status, data.conflicts);
-  const path = new URL(url, window.location.href).pathname;
+  if (!res.ok) {
+    throw new ApiError(data.error ?? 'Something went wrong', res.status, data.conflicts);
+  }
   const authTransition =
-    (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout'].includes(path)) ||
+    (method === 'POST' && ['/api/auth/login', '/api/auth/register', '/api/auth/logout', '/api/auth/reset'].includes(path)) ||
     (method === 'DELETE' && path === '/api/auth/me');
+  if (authTransition) {
+    advanceSession();
+    publishSessionEvent(path === '/api/auth/logout' || method === 'DELETE' ? 'logout' : 'changed');
+  }
   if (authTransition && typeof caches !== 'undefined') await caches.delete('api-network-first');
   if (res.status === 204) return undefined as T;
   return data as T;

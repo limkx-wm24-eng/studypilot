@@ -23,7 +23,7 @@ test('worker activation removes legacy API caches and offline API navigation nev
   expect(names).toContain('static-synthetic');
   await page.goto('/');
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
-  await page.evaluate(async () => { await fetch('/api/health'); await fetch('/api/classes'); });
+  await page.evaluate(async () => { await fetch('/api/health'); await fetch('/api/config'); await fetch('/api/classes'); });
   expect(await page.evaluate(async () => {
     for (const name of await caches.keys()) for (const request of await (await caches.open(name)).keys()) {
       if (/^\/api(?:\/|$)/i.test(new URL(request.url).pathname)) return false;

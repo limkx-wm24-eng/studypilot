@@ -27,5 +27,6 @@ export default defineConfig({
       })),
     },
   })],
-  server: { proxy: { '/api': 'http://localhost:3000' } },
+  // Preserve the browser's Host so Origin checks also work if Vite chooses another port.
+  server: { proxy: { '/api': { target: 'http://localhost:3000', changeOrigin: false } } },
 });

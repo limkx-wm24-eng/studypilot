@@ -1,7 +1,9 @@
 import { createApp } from './app.js';
 import { deleteExpiredSessions } from './auth.js';
 import { openDb } from './db.js';
+import { loadIngressConfig } from './ingress.js';
 
+const ingress = loadIngressConfig(); // Reject invalid topology before opening a database.
 const port = Number(process.env.PORT ?? 3000);
 const db = await openDb(process.env.DB_PATH ?? 'studypilot.db');
 await deleteExpiredSessions(db);
@@ -11,6 +13,6 @@ const sessionCleanup = setInterval(() => {
   });
 }, 60 * 60 * 1000);
 sessionCleanup.unref();
-createApp(db).listen(port, () => {
+createApp(db, { ingress }).listen(port, () => {
   console.log(`StudyPilot is running on http://localhost:${port}`);
 });

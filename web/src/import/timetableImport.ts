@@ -21,6 +21,9 @@ export interface ParsedSlot {
   /** 24-hour "HH:MM". */
   start: string;
   end: string;
+  /** Original malformed source values, retained so review can explain blank times. */
+  sourceStart?: string;
+  sourceEnd?: string;
   room: string;
   /** Non-blocking notes for the review screen. */
   warnings: string[];
@@ -55,18 +58,26 @@ export interface ParsedTimetable {
 export interface ParseOptions {
   /** Longest class name the app accepts. Longer names are cut with "…". */
   maxNameLength?: number;
+  maxTextLength?: number;
+  maxCourses?: number;
+  maxSessions?: number;
 }
+
+export const MAX_TIMETABLE_TEXT_LENGTH = 200_000;
+export const MAX_TIMETABLE_COURSES = 60;
+export const MAX_TIMETABLE_SESSIONS = 400;
+export const TIMETABLE_TEXT_LIMIT_HELP = 'This timetable has too much text. Use at most 200,000 characters; paste a smaller By Course table or save a smaller PDF.';
 
 const DAY_INDEX: Record<string, number> = {
   mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6, sun: 7,
 };
 
 const DAY = '(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[a-z]*';
-const TIME = '(\\d{1,2}:\\d{2})\\s*(AM|PM)';
+const DAY_START_RE = new RegExp(`\\b${DAY}\\s*,`, 'gi');
 
 /** "Mon , 5:00 PM ~ 7:00 PM ( Lecture: 2.0 hours )" */
 const SLOT_RE = new RegExp(
-  `\\b${DAY}\\s*,\\s*${TIME}\\s*[~\\-\\u2013]\\s*${TIME}\\s*\\(\\s*([A-Za-z ]+?)\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*hours?\\s*\\)`,
+  `\\b${DAY}\\s*,\\s*([^()]{0,160}?)\\s*\\(\\s*([A-Za-z ]+?)\\s*:\\s*(\\d+(?:\\.\\d+)?)\\s*hours?\\s*\\)`,
   'gi',
 );
 
@@ -81,7 +92,7 @@ const VENUE_RE =
 const TITLE_END =
   '(?=\\s+(?:Course\\s+(?:Plan|Syllabus|Without)\\b|\\(\\s*(?:courseplan|viewAttendance)|\\d{1,3}(?:\\.\\d+)?%|\\d+\\s+\\d{1,3}(?:\\.\\d+)?%)|\\s+' +
   DAY +
-  '\\s*,\\s*\\d{1,2}:\\d{2}|$)';
+  '\\s*,|$)';
 
 /**
  * "BMXX1001 TITLE IN CAPITALS". The title must start with a capital letter and has no
@@ -165,10 +176,22 @@ export function makeClassName(code: string, title: string, maxLength = 60): stri
 
 /** "5:00" + "PM" -> "17:00"; "12:00 AM" -> "00:00"; "12:30 PM" -> "12:30". */
 export function to24h(hm: string, ampm: string): string {
+  if (!/^(?:0?[1-9]|1[0-2]):[0-5]\d$/.test(hm) || !/^(AM|PM)$/i.test(ampm)) {
+    throw new RangeError('Use a 12-hour time with hours 1 to 12, minutes 00 to 59 and AM or PM.');
+  }
   const [hStr, mStr] = hm.split(':');
   let h = Number(hStr) % 12;
   if (ampm.toUpperCase() === 'PM') h += 12;
   return `${String(h).padStart(2, '0')}:${mStr}`;
+}
+
+export const validTimeRange = (slot: { start: string; end: string }) =>
+  /^([01]\d|2[0-3]):[0-5]\d$/.test(slot.start) && /^([01]\d|2[0-3]):[0-5]\d$/.test(slot.end) && slot.end > slot.start;
+
+function sourceTime(raw: string): string {
+  const value = raw.match(/^(\d{1,2}:\d{2})\s*(AM|PM)$/i);
+  if (!value) return '';
+  try { return to24h(value[1], value[2]); } catch { return ''; }
 }
 
 function minutes(hhmm: string): number {
@@ -198,8 +221,11 @@ export function findOverlaps(
   slots: Pick<ParsedSlot, 'weekday' | 'start' | 'end'>[],
 ): Array<[number, number]> {
   const out: Array<[number, number]> = [];
+  const valid = slots.map(validTimeRange);
   for (let i = 0; i < slots.length; i++) {
+    if (!valid[i]) continue;
     for (let j = i + 1; j < slots.length; j++) {
+      if (!valid[j]) continue;
       const a = slots[i];
       const b = slots[j];
       if (a.weekday === b.weekday && a.start < b.end && a.end > b.start) out.push([i, j]);
@@ -210,7 +236,9 @@ export function findOverlaps(
 
 export function parseTimetableText(raw: string, opts: ParseOptions = {}): ParsedTimetable {
   const maxName = opts.maxNameLength ?? 60;
-  const text = flatten(raw);
+  const maxText = opts.maxTextLength ?? MAX_TIMETABLE_TEXT_LENGTH;
+  const maxCourses = opts.maxCourses ?? MAX_TIMETABLE_COURSES;
+  const maxSessions = opts.maxSessions ?? MAX_TIMETABLE_SESSIONS;
   const result: ParsedTimetable = {
     semesterCode: null,
     semesterStart: null,
@@ -220,6 +248,14 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
     slots: [],
     problems: [],
   };
+  const overLimit = (message: string) => {
+    // Never return a partial timetable that could be imported accidentally.
+    result.courses = []; result.slots = []; result.problems.push(message);
+    return result;
+  };
+  // Check raw length before flattening, regex matching or allocating parse records.
+  if (raw.length > maxText) return overLimit(`Timetable text exceeds the ${maxText.toLocaleString('en-US')}-character limit. Use a smaller By Course table.`);
+  const text = flatten(raw);
 
   if (!text) {
     result.problems.push('There is no text to read.');
@@ -248,6 +284,9 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
 
   // 1) Find the course headings and the text that belongs to each.
   const heads = findHeads(text);
+  if (new Set(heads.map((head) => head.code)).size > maxCourses) {
+    return overLimit(`Timetable exceeds the limit of ${maxCourses} courses. Use a smaller By Course table.`);
+  }
 
   if (heads.length === 0) {
     result.problems.push(
@@ -258,8 +297,10 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
 
   const seenCourse = new Set<string>();
   const seenSlot = new Set<string>();
+  const firstAtTime = new Map<string, ParsedSlot>();
+  let unreadableSessions = 0;
 
-  heads.forEach((h, i) => {
+  for (const [i, h] of heads.entries()) {
     const className = makeClassName(h.code, h.title, maxName);
     const segEnd = i + 1 < heads.length ? heads[i + 1].start : text.length;
     const seg = text.slice(h.end, segEnd);
@@ -274,19 +315,26 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
       });
     }
 
+    const recognized = new Set<number>();
     for (const m of seg.matchAll(SLOT_RE)) {
-      const [whole, dayWord, sh, sap, eh, eap, typeWord, hoursStr] = m;
+      recognized.add(m.index!);
+      const [whole, dayWord, rangeText, typeWord, hoursStr] = m;
       const warnings: string[] = [];
       const errors: string[] = [];
 
       const weekday = DAY_INDEX[dayWord.slice(0, 3).toLowerCase()];
-      const start = to24h(sh, sap);
-      const end = to24h(eh, eap);
+      const range = rangeText.trim().match(/^(.*?)\s*[~\-\u2013]\s*(.*?)$/);
+      const rawStart = range ? range[1].trim() : rangeText.trim();
+      const rawEnd = range ? range[2].trim() : '';
+      const start = sourceTime(rawStart);
+      const end = sourceTime(rawEnd);
+      if (!start) errors.push(`Invalid source start time "${rawStart || '(missing)'}". Use hours 1 to 12, minutes 00 to 59 and AM or PM; correct or exclude this session.`);
+      if (!end) errors.push(`Invalid source end time "${rawEnd || '(missing)'}". Use hours 1 to 12, minutes 00 to 59 and AM or PM; correct or exclude this session.`);
       const { kind, warning } = kindFrom(typeWord);
       if (warning) warnings.push(warning);
 
-      if (end <= start) errors.push('The end time must be after the start time.');
-      else {
+      if (start && end && end <= start) errors.push('The end time must be after the start time.');
+      else if (start && end) {
         const span = (minutes(end) - minutes(start)) / 60;
         if (Math.abs(span - Number(hoursStr)) > 0.01) {
           warnings.push(`The portal says ${hoursStr} h but the times span ${span} h — please check.`);
@@ -298,23 +346,40 @@ export function parseTimetableText(raw: string, opts: ParseOptions = {}): Parsed
       const room = v ? v[1].replace(/\s+/g, ' ').trim().slice(0, 30) : '';
       if (!v) warnings.push('Room not found — you can type it in.');
 
-      const key = `${h.code}|${weekday}|${start}|${end}`;
-      if (seenSlot.has(key)) continue; // same session printed twice
-      seenSlot.add(key);
+      const identity = `${h.code}|${weekday}|${start}|${end}`;
+      const key = JSON.stringify([identity, kind, room]);
+      const valid = validTimeRange({ start, end });
+      if (valid && seenSlot.has(key)) continue; // same valid session printed twice
+      if (result.slots.length + unreadableSessions >= maxSessions) return overLimit(`Timetable exceeds the limit of ${maxSessions} sessions. Use a smaller By Course table.`);
+      if (valid) seenSlot.add(key);
 
-      result.slots.push({
+      const row: ParsedSlot = {
         className,
         courseCode: h.code,
         kind,
         weekday,
         start,
         end,
+        ...(!start ? { sourceStart: rawStart || '(missing)' } : {}),
+        ...(!end ? { sourceEnd: rawEnd || '(missing)' } : {}),
         room,
         warnings,
         errors,
-      });
+      };
+      const previous = valid ? firstAtTime.get(identity) : undefined;
+      if (previous) {
+        const describe = (slot: ParsedSlot) => `${slot.kind}, room ${slot.room || '(not supplied)'}`;
+        const message = `Metadata conflict at ${start}-${end}: ${describe(previous)} versus ${describe(row)}. Choose one session or edit the conflicting details.`;
+        previous.warnings.push(message); row.warnings.push(message);
+      } else if (valid) firstAtTime.set(identity, row);
+      result.slots.push(row);
     }
-  });
+    for (const candidate of seg.matchAll(DAY_START_RE)) {
+      if (recognized.has(candidate.index!)) continue;
+      if (result.slots.length + ++unreadableSessions > maxSessions) return overLimit(`Timetable exceeds the limit of ${maxSessions} sessions. Use a smaller By Course table.`);
+      result.problems.push(`${h.code}: Could not read the session near "${seg.slice(candidate.index, candidate.index! + 80).trim()}". Choose again and correct this source row; it will not be imported. Other reviewed sessions can be selected independently.`);
+    }
+  }
 
   for (const c of result.courses) {
     c.sessions = result.slots.filter((s) => s.courseCode === c.code).length;

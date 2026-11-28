@@ -1,0 +1,30 @@
+import { expect, test } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
+
+test.use({ serviceWorkers: 'block' });
+async function setup(page: import('@playwright/test').Page, date: string) {
+  await page.clock.setFixedTime(new Date(date + 'T12:00:00+08:00')); await page.request.post('/api/auth/register', { data: { email: `native-calendar-${crypto.randomUUID()}@example.test`, password: 'synthetic-password-123' } }); const klass = await (await page.request.post('/api/classes', { data: { name: 'Synthetic calendar class', color: '#0f766e' } })).json(); return klass;
+}
+for (const [date, mondayWeeks, sundayWeeks, mondayOffset, sundayOffset, days] of [['2021-02-01', 4, 5, 0, 1, 28], ['2026-02-01', 5, 4, 6, 0, 28], ['2026-08-01', 6, 6, 5, 6, 31]] as const) test(`native calendar preserves weeks, blank positions and column headers for ${date}`, async ({ page }, info) => {
+  await setup(page, date); await page.goto('/'); await page.getByRole('button', { name: 'Tasks', exact: true }).click(); await page.getByRole('button', { name: 'Calendar', exact: true }).click(); const table = page.getByRole('table');
+  for (const [sundayFirst, weeks, offset, first] of [[false, mondayWeeks, mondayOffset, 'Mon'], [true, sundayWeeks, sundayOffset, 'Sun']] as const) {
+    await page.getByRole('checkbox', { name: 'Sunday first' }).setChecked(sundayFirst); await expect(table.getByRole('columnheader').first()).toHaveText(first); await expect(table.locator('tbody tr')).toHaveCount(weeks); await expect(table.locator('tbody td.empty')).toHaveCount(weeks * 7 - days); await expect(table.getByRole('row')).toHaveCount(weeks + 1);
+    const relation = await table.evaluate((e, offset) => { const cells = [...e.querySelectorAll('tbody td')]; return { first: cells.findIndex(c => !c.classList.contains('empty')), valid: cells.every((c, i) => c.getAttribute('headers') === e.querySelectorAll('thead th')[i % 7].id && e.querySelectorAll('thead th')[i % 7].getAttribute('scope') === 'col'), empty: cells.slice(0, offset).every(c => !c.textContent?.trim()) }; }, offset);
+    expect(relation).toEqual({ first: offset, valid: true, empty: true });
+    const firstCell = await table.locator('tbody td:not(.empty)').first().boundingBox(); const header = await table.getByRole('columnheader').nth(offset).boundingBox(); expect(Math.abs(firstCell!.x - header!.x)).toBeLessThan(1);
+  }
+  const cdp = await page.context().newCDPSession(page); const { nodes } = await cdp.send('Accessibility.getFullAXTree'); const native = nodes.find(n => n.role?.value === 'table'); expect(native).toBeTruthy(); expect(nodes.filter(n => n.role?.value === 'row').length).toBeGreaterThanOrEqual(5); expect(nodes.filter(n => n.role?.value === 'columnheader')).toHaveLength(7); expect(nodes.filter(n => n.role?.value === 'cell')).toHaveLength(sundayWeeks * 7); expect(nodes.some(n => n.role?.value === 'grid')).toBe(false);
+  writeFileSync(info.outputPath('calendar-accessibility.txt'), await table.ariaSnapshot());
+});
+
+test('native calendar keeps contextual names, expansion, focus order and persisted pointer/Enter/Space activation', async ({ page }, info) => {
+  const klass = await setup(page, '2026-11-25'); const tasks = [];
+  for (let i = 0; i < 6; i++) tasks.push(await (await page.request.post('/api/tasks', { data: { classId: klass.id, name: `Synthetic calendar ${i}`, type: 'Homework', priority: 'Medium', status: 'Not started', due: i === 5 ? '2026-11-26' : '2026-11-25', grade: null } })).json());
+  await page.goto('/'); await page.getByRole('button', { name: 'Tasks', exact: true }).click(); await page.getByRole('button', { name: 'Calendar', exact: true }).click(); const table = page.getByRole('table', { name: 'November 2026 deadlines', exact: true }); const cell = table.getByRole('cell', { name: '2026-11-25, 5 tasks', exact: true }); await expect(cell.locator('.calendar-chip')).toHaveCount(3); await cell.getByRole('button', { name: 'Show 2 more tasks on 2026-11-25', exact: true }).click(); await expect(cell.locator('.calendar-chip')).toHaveCount(5);
+  const region = page.getByRole('region', { name: 'Calendar dates', exact: true }); await region.focus(); await page.keyboard.press('Shift+Tab'); await expect(page.getByRole('checkbox', { name: 'Sunday first' })).toBeFocused(); await page.keyboard.press('Tab'); await expect(region).toBeFocused(); await page.keyboard.press('Tab'); const task = cell.getByRole('button', { name: /^Synthetic calendar 0, Homework, due 2026-11-25\. Mark / }); await expect(task).toHaveAttribute('aria-label', 'Synthetic calendar 0, Homework, due 2026-11-25. Mark complete'); await expect(task).toBeFocused();
+  const stored = async () => (await (await page.request.get('/api/tasks')).json()).find((t: { id: string }) => t.id === tasks[0].id).status;
+  await task.click(); await expect.poll(stored).toBe('Complete'); await expect(task).toHaveAttribute('aria-label', 'Synthetic calendar 0, Homework, due 2026-11-25. Mark not started'); await page.keyboard.press('Enter'); await expect.poll(stored).toBe('Not started'); await page.keyboard.press('Space'); await expect.poll(stored).toBe('Complete');
+  const accessibleNames = await table.getByRole('button').evaluateAll(es => es.map(e => e.getAttribute('aria-label') || e.textContent)); expect(new Set(accessibleNames).size).toBe(accessibleNames.length);
+  await page.getByRole('button', { name: 'Next month', exact: true }).focus(); await page.keyboard.press('Enter'); await expect(page.getByRole('heading', { name: 'December 2026', exact: true })).toHaveAttribute('aria-live', 'polite'); await page.keyboard.press('Enter'); await expect(page.getByRole('heading', { name: 'January 2027', exact: true })).toBeVisible(); await page.getByRole('button', { name: 'Previous month', exact: true }).click(); await expect(page.getByRole('heading', { name: 'December 2026', exact: true })).toBeVisible(); await page.getByRole('button', { name: 'This month', exact: true }).click(); await expect(page.getByRole('heading', { name: 'November 2026', exact: true })).toBeVisible();
+  writeFileSync(info.outputPath('calendar-interactive.txt'), await table.ariaSnapshot());
+});

@@ -1,8 +1,13 @@
 import type { Express, NextFunction, Request, Response } from 'express';
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { type Database, type DbRow, type DbValue } from './db.js';
-import { createMailer, type Mailer } from './mailer.js';
+import { createMailer, emailEnabled, EMAIL_UNAVAILABLE, type Mailer } from './mailer.js';
+import { calendarDate, singleLineText } from './validation.js';
+import { passwords, needsPasswordUpgrade, type PasswordService } from './passwords.js';
+import { LoginLimits } from './loginLimits.js';
+import { clientIdentity } from './ingress.js';
+export { hashPassword, checkPassword } from './passwords.js';
 
 const COOKIE = 'sp_session';
 const SESSION_DAYS = 14;
@@ -60,26 +65,15 @@ export class InMemoryAuthFailureStore implements AuthFailureStore {
   }
 }
 
-export function hashPassword(password: string): string {
-  const salt = randomBytes(16);
-  return `${salt.toString('hex')}:${scryptSync(password, salt, 64).toString('hex')}`;
-}
-export function checkPassword(password: string, stored: string): boolean {
-  const [salt, hash] = stored.split(':');
-  const actual = scryptSync(password, Buffer.from(salt, 'hex'), 64);
-  const expected = Buffer.from(hash, 'hex');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
 const credentials = z.object({ email: z.string().trim().toLowerCase().email().max(120), password: z.string().min(8).max(72) });
 const loginBody = credentials.extend({ rememberMe: z.boolean().default(false) });
-const registerBody = credentials.extend({ name: z.string().trim().max(40).default('') });
+const registerBody = credentials.extend({ name: singleLineText.max(40).default('') });
 const forgotBody = z.object({ email: credentials.shape.email });
 const resetBody = z.object({ token: z.string().min(1).max(128), newPassword: credentials.shape.password });
 const emailChangeBody = z.object({ newEmail: credentials.shape.email, password: z.string().max(72) });
 const profileBody = z.object({
-  name: z.string().trim().max(40), courseType: z.enum(['', 'Degree', 'Diploma', 'Foundation']), programme: z.string().trim().max(60),
-  semesterWeeks: z.union([z.literal(7), z.literal(14)]), semesterStart: z.union([z.literal(''), z.string().regex(/^\d{4}-\d{2}-\d{2}$/)]),
+  name: singleLineText.max(40), courseType: z.enum(['', 'Degree', 'Diploma', 'Foundation']), programme: singleLineText.max(60),
+  semesterWeeks: z.union([z.literal(7), z.literal(14)]), semesterStart: z.union([z.literal(''), calendarDate]),
   reminderDays: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3), z.literal(7)]),
 }).partial();
 const toUser = (row: DbRow) => ({
@@ -93,10 +87,11 @@ const getAttemptEmail = (body: unknown): string | undefined => {
   const email = body.email.trim().toLowerCase();
   return email && email.length <= 120 ? email : undefined;
 };
-const getClientIp = (req: Request) => req.ip || req.socket.remoteAddress || 'unknown';
+const getClientIp = clientIdentity;
 const isUniqueConstraintViolation = (error: unknown) => {
   if (!error || typeof error !== 'object' || !('code' in error)) return false;
-  return error.code === '23505' || error.code === 'ERR_SQLITE_CONSTRAINT_UNIQUE' || error.code === 'SQLITE_CONSTRAINT_UNIQUE';
+  return error.code === '23505' || error.code === 'ERR_SQLITE_CONSTRAINT_UNIQUE' || error.code === 'SQLITE_CONSTRAINT_UNIQUE'
+    || (error.code === 'ERR_SQLITE_ERROR' && 'errcode' in error && [1555, 2067].includes(Number(error.errcode)));
 };
 
 export const makeRequireUser = (db: Database) => async (req: Request, res: Response, next: NextFunction) => {
@@ -110,10 +105,12 @@ export const makeRequireUser = (db: Database) => async (req: Request, res: Respo
 export function authRoutes(
   app: Express,
   db: Database,
-  options: { mailer?: Mailer } = {},
+  options: { mailer?: Mailer; passwords?: PasswordService } = {},
   failures: AuthFailureStore = new InMemoryAuthFailureStore(),
 ) {
   const mailer = options.mailer ?? createMailer();
+  const passwordService = options.passwords ?? passwords;
+  const loginLimits = new LoginLimits();
   const consumptionLimits = new Map<string, number[]>();
   const limitConsumption: import('express').RequestHandler = (req, res, next) => {
     const now = Date.now();
@@ -159,10 +156,11 @@ export function authRoutes(
     }
     res.status(status).json({ error: message });
   };
-  const startSession = async (res: Response, userId: string, rememberMe = true) => {
+  const startSession = async (res: Response, userId: string, rememberMe = true, database = db) => {
     const token = randomBytes(32).toString('base64url');
-    await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [sha(token), userId, Date.now() + SESSION_DAYS * 864e5]);
-    res.cookie(COOKIE, token, {
+    await database.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [sha(token), userId, Date.now() + SESSION_DAYS * 864e5]);
+    // Publish the cookie only after the caller's transaction has committed.
+    return () => res.cookie(COOKIE, token, {
       httpOnly: true,
       sameSite: 'lax',
       secure: process.env.NODE_ENV === 'production',
@@ -246,12 +244,12 @@ export function authRoutes(
     if (!limited) {
       const retryAfter = failures.recordFailure(email, ip, Date.now());
       if (retryAfter !== undefined) {
-        res.status(200).json({ message: FORGOT_MESSAGE });
+        res.status(200).json({ message: emailEnabled(mailer) ? FORGOT_MESSAGE : EMAIL_UNAVAILABLE });
         return;
       }
     }
-    res.status(200).json({ message: FORGOT_MESSAGE });
-    if (parsed.success && !limited) {
+    res.status(200).json({ message: emailEnabled(mailer) ? FORGOT_MESSAGE : EMAIL_UNAVAILABLE });
+    if (emailEnabled(mailer) && parsed.success && !limited) {
       sendInBackground(() => sendResetEmail(parsed.data.email), 'process password reset email');
     }
   });
@@ -260,6 +258,14 @@ export function authRoutes(
     const parsed = resetBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: RESET_INVALID_MESSAGE });
     const tokenHash = sha(parsed.data.token);
+    // Check before expensive work, then re-check atomically after hashing. A full
+    // hash queue must not consume the token or hold a database transaction open.
+    const account = await db.get("SELECT u.password_hash FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.purpose = 'password_reset' AND t.used_at IS NULL AND t.expires_at > ?", [tokenHash, Date.now()]);
+    if (!account) {
+      return void res.status(400).json({ error: RESET_INVALID_MESSAGE });
+    }
+    const originalHash = String(account.password_hash);
+    const nextHash = await passwordService.hashForReset(parsed.data.newPassword, originalHash);
     const now = Date.now();
     const reset = await db.transaction(async (transaction) => {
       const token = await transaction.get(
@@ -267,12 +273,16 @@ export function authRoutes(
         [tokenHash, now],
       );
       if (!token) return false;
+      // A concurrent password/profile change invalidates this attempt without
+      // consuming its token. No KDF work occurs while holding this row lock.
+      const locked = await transaction.run('UPDATE users SET id = id WHERE id = ? AND password_hash = ?', [token.user_id as string, originalHash]);
+      if (locked.changes !== 1) return false;
       const marked = await transaction.run(
         "UPDATE auth_tokens SET used_at = ? WHERE id = ? AND purpose = 'password_reset' AND used_at IS NULL AND expires_at > ?",
         [now, token.id as string, now],
       );
       if (marked.changes !== 1) return false;
-      await transaction.run('UPDATE users SET password_hash = ? WHERE id = ?', [hashPassword(parsed.data.newPassword), token.user_id as string]);
+      await transaction.run('UPDATE users SET password_hash = ? WHERE id = ?', [nextHash, token.user_id as string]);
       await transaction.run('DELETE FROM sessions WHERE user_id = ?', [token.user_id as string]);
       return true;
     });
@@ -305,7 +315,13 @@ export function authRoutes(
     res.json({ message: 'Email verified.' });
   });
 
-  app.post('/api/auth/resend-verification', requireUser, async (_req, res) => {
+  app.post('/api/auth/resend-verification', (req, res, next) => {
+    if (emailEnabled(mailer)) return next();
+    // Do not inspect accounts or sessions when nothing can be delivered.
+    const retryAfter = recordResend(`disabled:${getClientIp(req)}`, Date.now());
+    if (retryAfter !== undefined) res.set('Retry-After', String(retryAfter));
+    res.status(retryAfter === undefined ? 202 : 429).json({ message: EMAIL_UNAVAILABLE });
+  }, requireUser, async (_req, res) => {
     const userId = String(res.locals.userId);
     const user = await db.get('SELECT email, email_verified_at FROM users WHERE id = ?', [userId]);
     if (!user) return void res.status(401).json({ error: 'Please log in' });
@@ -371,14 +387,17 @@ export function authRoutes(
     if (!parsed.success) return failAuthentication(res, email, ip, 400, 'Enter a valid email and a password of 8 to 72 characters');
     if (await emailExists(parsed.data.email)) return failAuthentication(res, email, ip, 409, 'That email is already registered');
     const id = randomUUID();
+    const passwordHash = await passwordService.hash(parsed.data.password);
     try {
-      await db.run('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)', [id, parsed.data.email, parsed.data.name, hashPassword(parsed.data.password)]);
-    } catch {
+      await db.run('INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)', [id, parsed.data.email, parsed.data.name, passwordHash]);
+    } catch (error) {
+      if (!isUniqueConstraintViolation(error)) throw error;
       return failAuthentication(res, email, ip, 409, 'That email is already registered');
     }
     failures.clearEmail(email);
-    const verificationToken = await createAuthToken(id, 'verify');
-    await startSession(res, id);
+    const verificationToken = emailEnabled(mailer) ? await createAuthToken(id, 'verify') : undefined;
+    const setCookie = await startSession(res, id);
+    setCookie();
     res.status(201).json(await getProfile(id));
     if (verificationToken) sendInBackground(() => sendLinkEmail(parsed.data.email, 'verify', verificationToken), 'send email verification message');
   });
@@ -386,15 +405,32 @@ export function authRoutes(
   app.post('/api/auth/login', async (req, res) => {
     const email = getAttemptEmail(req.body);
     const ip = getClientIp(req);
-    if (rejectIfLimited(res, email, ip)) return;
-    const parsed = loginBody.safeParse(req.body);
-    const row = parsed.success ? await db.get('SELECT * FROM users WHERE email = ?', [parsed.data.email]) : undefined;
-    if (!parsed.success || !row || !checkPassword(parsed.data.password, String(row.password_hash))) {
-      return failAuthentication(res, email, ip, 401, 'Invalid email or password');
-    }
-    failures.clearEmail(email);
-    await startSession(res, String(row.id), parsed.data.rememberMe);
-    res.json(await getProfile(String(row.id)));
+    const ticket = loginLimits.begin(email, ip);
+    const reject = (retryAfter?: number) => {
+      if (retryAfter !== undefined) res.set('Retry-After', String(retryAfter));
+      res.status(retryAfter === undefined ? 401 : 429).json({ error: retryAfter === undefined ? 'Invalid email or password' : 'Too many failed authentication attempts. Try again later.' });
+    };
+    if ('retryAfter' in ticket) return reject(ticket.retryAfter);
+    try {
+      const parsed = loginBody.safeParse(req.body);
+      const row = parsed.success ? await db.get('SELECT * FROM users WHERE email = ?', [parsed.data.email]) : undefined;
+      const originalHash = row ? String(row.password_hash) : undefined;
+      const passwordMatches = parsed.success && await passwordService.verifyLogin(parsed.data.password, originalHash);
+      if (!parsed.success || !row || !passwordMatches) return reject(ticket.finish(false));
+      // Verification releases its permit before a separate upgrade acquires one.
+      const nextHash = needsPasswordUpgrade(originalHash!) ? await passwordService.hash(parsed.data.password) : originalHash!;
+      const setCookie = await db.transaction(async (transaction) => {
+        const matched = await transaction.run('UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?', [nextHash, row.id as string, originalHash!]);
+        if (!matched.changes) return undefined;
+        // The row lock and session insert make a concurrent reset either precede
+        // this login (which fails) or follow it (revoking this session too).
+        return startSession(res, String(row.id), parsed.data.rememberMe, transaction);
+      });
+      if (!setCookie) return reject(ticket.finish(false));
+      setCookie();
+      ticket.finish(true);
+      res.json(await getProfile(String(row.id)));
+    } finally { ticket.finish(false, false); }
   });
 
   app.post('/api/auth/logout', async (req, res) => {
@@ -404,6 +440,7 @@ export function authRoutes(
   });
   app.get('/api/auth/me', requireUser, async (_req, res) => { res.json(await getProfile(res.locals.userId)); });
   app.patch('/api/auth/email', requireUser, async (req, res) => {
+    if (!emailEnabled(mailer)) return void res.status(503).json({ error: EMAIL_UNAVAILABLE });
     const parsed = emailChangeBody.safeParse(req.body);
     if (!parsed.success) return void res.status(400).json({ error: 'Enter a valid email and password' });
 
@@ -413,7 +450,7 @@ export function authRoutes(
     const currentEmail = String(user.email).trim().toLowerCase();
     const ip = getClientIp(req);
     if (rejectIfLimited(res, currentEmail, ip)) return;
-    if (!checkPassword(parsed.data.password, String(user.password_hash))) {
+    if (!await passwordService.verify(parsed.data.password, String(user.password_hash))) {
       failures.recordFailure(currentEmail, ip, Date.now());
       return void res.status(401).json({ error: 'Incorrect password' });
     }

@@ -23,6 +23,10 @@ Your PDF is read in your browser and never uploaded. Only the classes and sessio
 
 Limits: 10 MB, 20 PDF pages, 40 classes and 200 sessions per import. Everything is imported as weekly. Image-only PDFs need re-saving with a text layer or pasting the table; OCR is not supported. Identical sessions are skipped and overlapping sessions must be fixed or unchecked.
 
+Source times must use hours 1–12, minutes 00–59 and AM/PM (case-insensitive; valid zero-padded hours are supported). Invalid source times remain visible with their original text and blank time fields; correct the 24-hour fields or exclude the session before importing. They are never normalized into other times, deduplicated away or included in overlap checks. Unreadable source rows are identified explicitly and require choosing the source again to correct them; other valid reviewed sessions can still be imported.
+
+Pasted text and text extracted from a PDF are limited to 200,000 characters. Before overlap checks, the parser also rejects more than 60 courses or 400 sessions; the smaller 40-class and 200-session limits still apply when confirming an import.
+
 ## Stack
 - **Frontend:** React 19 + TypeScript + Vite (`web/`)
 - **API:** Node.js + Express 5 + TypeScript, zod request validation (`src/`)
@@ -59,37 +63,75 @@ npm start
 
 PostgreSQL verification is opt-in. Set `TEST_DATABASE_URL` explicitly to a disposable PostgreSQL database whose name contains `test`, then run `npm run test:pg`. The command never falls back to `DATABASE_URL`, refuses missing or non-test URLs, and never prints connection strings. It allows only the `sslmode` URL query parameter. The database role needs permission to create schemas.
 
-The runner applies every migration in fresh, empty, isolated schemas, tests migration 010 against existing synthetic classes, slots, tasks and attendance, then runs the import API tests on PostgreSQL. It removes only the schemas it creates. The SQLite suite checks the same populated migration and foreign-key behavior. Migration 010 uses SQLite triggers, so no classes-table rebuild is needed. A separate CI job runs the PostgreSQL checks against a fresh PostgreSQL service container.
+The runner applies every migration in fresh, empty, isolated schemas, tests migration 010 against existing synthetic classes, slots, tasks and attendance, then runs the import API and security regression tests on PostgreSQL. It removes only the schemas it creates. The SQLite suite checks the same populated migration and foreign-key behavior. Migration 010 uses SQLite triggers, so no classes-table rebuild is needed. A separate CI job runs the PostgreSQL checks against a fresh PostgreSQL service container.
 
 Build and run the Docker image:
 ```bash
 docker build -t studypilot .
-docker run -p 3000:3000 -v studypilot-data:/data studypilot
+docker run -e INGRESS_MODE=direct -p 3000:3000 -v studypilot-data:/data studypilot
 ```
 Set `DATABASE_URL` to use PostgreSQL; without it, local development continues to use SQLite. For a local PostgreSQL instance, run `docker compose up -d postgres`, then use `DATABASE_URL=postgresql://studypilot:studypilot@localhost:5432/studypilot` before starting the API. Migrations run automatically at startup.
 
 Existing SQLite databases are migrated automatically on startup.
 
-## Email setup
+Migration startup commits ledger initialization, all pending SQL and its history in one transaction. SQLite retains its shared-connection transaction queue and uses `BEGIN IMMEDIATE`; migration contention yields between retries for at most 15 seconds rather than blocking the event loop with synchronous waits. PostgreSQL pins one connection, takes a transaction-scoped advisory lock keyed by database and current schema before creating/checking the ledger, and rechecks history under that lock. Its migration lock wait is limited to 15 seconds and each statement to 60 seconds. Commit, rollback or connection loss releases the lock; errors propagate and a later startup can retry. Application transactions and per-user timetable locks are unchanged.
+
+Only historical SQLite single-column migrations 002–006 and 009 may be recognized without history, after their declared type, nullability, default and non-primary-key status match. Duplicate-object messages are not generally suppressed. An unrecorded canonical fragment of 010 is explicitly recreated inside the transaction; an unexpected definition fails. Forward migration `012_class_name_guard_repair.sqlite.sql` restores both class-name triggers even if old 010 history incorrectly claims completion. It is safe to repeat, never rewrites names or related data, permits unrelated updates to legacy names and preserves the existing whitespace/code-point policy. PostgreSQL still ends at 011; SQLite applies 001–010 plus 012. Historical migrations 001–011 remain unchanged.
+
+## Email
+Email verification, password reset and the Brevo HTTPS sender are built and tested with fake mail delivery. Real delivery has not been tested. The live demo intentionally runs with email off: the free providers considered require organization details or a verified domain. Render's free tier blocks SMTP, so this project supports an HTTPS email API instead.
+
+With no production `MAIL_API_KEY`, `/api/config` returns only `{ "emailEnabled": false }`. Accounts and study features remain usable without verification. Forgot-password sending, verification resend and initiating an email change are unavailable; the UI explains why instead of promising mail. Registration, forgot-password and resend create no unsendable tokens. Already-issued, valid links can still be consumed. Forgot-password and resend give the same disabled message regardless of the submitted email; rate limits remain in force.
+
+The UI fetches this public flag once per page load and keeps it in memory only. It is never written to browser storage or cached by the service worker.
+
+Verification resend retains its one-minute cooldown and five-per-day limit. With email enabled these limits are per user; with email disabled they are per IP, so the response does not depend on an account lookup. Forgot-password throttling and existing token-consumption limits remain unchanged.
+
+To enable delivery later, configure `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM` (an authorized sender address) and `APP_URL` (the app's public HTTPS URL), then restart the service and reload the app. Do not put keys in source control. Availability reports configuration, not proof of successful provider delivery. No provider or domain setup is required for the demo.
+
 When running the Vite development server, set `APP_URL=http://localhost:5173` so local token links open the running frontend. Reset and verification emails are implemented; the console provider prints only their links, never recipient details.
 
 Password-reset links expire after **30 minutes**; verification links expire after **24 hours**. Reset tokens are single-use, and resetting a password revokes existing sessions. Console email output is disabled when `NODE_ENV=production`, including mailers constructed before the environment changes. Production never falls back to development token links.
 
-For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (or unset); usable token links print only to your local API console, without recipient information. Console links are suppressed in test and production modes. To send email, create a Brevo API key, verify a sender address, then set `MAIL_PROVIDER=brevo`, `MAIL_API_KEY`, `MAIL_FROM`, and `APP_URL` (the public base URL of the app). Keep `MAIL_API_KEY` private. If the production key is missing, password reset email delivery stays disabled and the server logs one warning.
+For local development, use `MAIL_PROVIDER=console` with `NODE_ENV=development` (or unset); usable token links print only to your local API console, without recipient information. Console links are suppressed in test and production modes. If the production key is missing, email stays disabled and the server logs one warning. Keep `MAIL_API_KEY` private.
 
 ## Deploy
 
-This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/studypilot-ts/blob/main/render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
+This project includes a [Render Blueprint](https://github.com/limkx-wm24-eng/studypilot/blob/main/render.yaml) for a free public web service and uses Neon for hosted PostgreSQL. Do not commit a `.env` file or paste a connection string into source control.
+
+For reproducible release builds use `npm ci`, then `npm --prefix web ci`, followed by `npm run build:all`; the earlier `npm install` commands are for development. The Blueprint explicitly sets `dockerContext: .` and `dockerfilePath: ./Dockerfile`, relative to the repository root. `node scripts/check-blueprint.mjs --build` validates and builds those actual paths. The guard supports this project's one-service Blueprint and simple scalar path fields; unsupported syntax or a structure change requires extending the guard first. It rejects missing paths, wrong file types, duplicates and paths/links escaping the repository. CI runs the guard and its negative regressions without a YAML dependency.
+
+Before deployment, an authorized owner must privately verify the intended hosted PostgreSQL target, TLS configuration, migration permissions and reachability. An absent `DATABASE_URL` still selects SQLite; that fallback is inappropriate for persistent data on ephemeral free hosting. Keep `NODE_ENV=production` and the hosting-provided `PORT`. Production now also requires explicit ingress configuration: the Blueprint deliberately supplies no unverified proxy trust. Resolve the trusted-ingress deployment blocker below before attempting a release. The live demo intentionally leaves `MAIL_API_KEY` unset; no mail-provider setup is required. Actual Render settings and HTTPS cookie behavior have not been verified by local Docker tests.
+
+Main automatically deploys according to the owner's configuration. Merge authorization and deployment authorization must be coordinated: a merge-only operation requires the owner to verify auto-deployment is suspended first. No repository test changes hosting settings or deploys the application.
 
 1. Push this repository to GitHub. The Blueprint is at the repository root and builds the app from the repository root.
 2. Create a Neon Free project, then copy its PostgreSQL connection string from the **Connect** panel. Use the connection string with `sslmode=require`.
 3. In Render, select **New > Blueprint**, connect the GitHub repository, and select the branch containing `render.yaml`.
 4. Set the prompted `DATABASE_URL` value to the Neon connection string. Render supplies `NODE_ENV=production` and `PORT=10000` from the Blueprint.
-5. Create the Blueprint and wait for Render to report a passing `/api/health` check. Open the generated `https://<service>.onrender.com` URL and register an account. Database migrations run automatically on first startup.
+5. Before starting a separately authorized deployment, establish and verify the ingress contract below, including the health-check path. Only then create the Blueprint and require a passing `/api/health` check. Use synthetic accounts for verification. Database migrations run automatically on first startup; missing production ingress configuration fails before opening the database.
 
 Use `.env.example` as a reference for local environment-variable names and replace its placeholders when setting values. The app does not read `.env` automatically; set variables in PowerShell or in your host dashboard. Do not commit real credentials.
 
 Free-tier notes verified in October 2026: Render Free web services spin down after 15 minutes without traffic, receive 750 free instance-hours per workspace each month, and can restart at any time. [Render's free-service limits](https://render.com/docs/free) apply. Neon's Free plan currently provides 1 GB storage and 100 CU-hours of compute per project each month; see [Neon's current Free plan announcement](https://neon.com/blog/neon-free-plan-1-gb-per-project). These limits make this suitable for a portfolio demo, not a production service.
+
+## Recovery and rollback
+
+The password-compatible recovery checkpoint is immutable P1-A commit **`3eb77b75297cd7b9cd7717d459e83b59af8858fb`**. P1-B activates the stronger writer for the real-student production objective; it does not authorize release. `node scripts/test-rollback.mjs` builds the current p=5 application (including P2-A ingress) and the exact archived P1-A source, each with its own manifests/lockfiles, and exercises **current → P1-A → current** on disposable SQLite and PostgreSQL databases. Actual APIs register, upgrade and reset stronger accounts; the P1-A application authenticates them, preserves records and strong resets, sessions, ownership, study data, history, guards and foreign keys. Recovery-created weaker records upgrade after returning to the current application; dormant accounts are checked before authentication to prove there is no bulk rewrite.
+
+**P1-A is a compatible reader, not a continuous stronger writer.** It still registers accounts and resets weaker accounts at p=1 (already-strong resets remain p=5). The harness explicitly demonstrates this limitation. Recovery requires a separately authorized, verified maintenance/ingress boundary restricting public registration and password changes, plus controlled access during the handoff. No application setting currently enforces these restrictions, and actual hosting controls are unverified. If an existing external boundary cannot enforce them, keep public access/writes disabled and use a forward corrective release; do not advertise an unrestricted P1-A rollback as maintaining stronger storage. This stage adds no registration or lifecycle controls.
+
+P1-A also retains its old implicit proxy behavior and does not supply P2-A ingress protection. External maintenance/access restrictions must cover this during recovery. The published P2-A checkpoint is a proposed stronger-writer, ingress-aware future recovery candidate: it changes neither schema nor password format. Its current-to-P1-A-to-current recovery is tested, but a future release's round trip through P2-A is not yet tested. Keep the immutable minimum password-compatible checkpoint above and prove that future recovery path separately.
+
+Never blindly revert to old main `ac4f510258ffe95203d153d6eefd285b5ed77d3e` after versioned password records have been written: its legacy-only reader returns HTTP 500 for those accounts. Do not downgrade stored hashes or require blanket resets to work around this.
+
+The obsolete Q3 Stage 3 target **`14614752e81f6e4d6a78f93210b9eb7c9c447939` cannot read p=5**. Historical R-04 coverage remains a distinct P1-A → Stage 3 → P1-A scenario on separate pre-p=5 SQLite/PostgreSQL datasets, retaining its original registration, legacy upgrades, sessions, ownership, study-data and guard assertions and old-main negative test. A reader-only process also proves that the exact Stage 3 reader rejects an actual P1-B record without mounting or opening its database. The rollback CI job runs both scenarios. Historical images use `git archive` of exact SHAs and Docker's `npm ci`; no host installs or branch updates occur. Raw passwords, cookies, tokens and records are never logged. Temporary `images.json`, `*-image.id`, build logs and sanitized results identify the exact tested images. Retain the tested P1-A artifact through an authorized mechanism before any deployment; a local image identity is not a remotely available registry image. The floating Node 22 base means an untested rebuild is not interchangeable with a tested artifact.
+
+Every recovery handoff requires completed migrations, independently verified history, both class-name guards and foreign keys, halted writes and serialized startup with corrected repository-root Docker paths. The historical Stage 3 image additionally retains its old runner/Blueprint defects: never apply its old Blueprint or use it with pending/interrupted/competing migrations, and never use it operationally with p=5 data. Recovery preserves the completed 012 SQLite ledger and 011 PostgreSQL schema without downgrading either. If prerequisites cannot be established, use a forward corrective release.
+
+Before any separately authorized deployment, take an access-controlled backup and prove restoration into an approved isolated database. For PostgreSQL, use a custom-format `pg_dump`, inspect it with `pg_restore --list`, restore with `pg_restore --exit-on-error`, and verify schema history, guard behavior, row/ownership relationships and critical workflows. For SQLite, stop writers and take a consistent database backup, not an arbitrary copy during a write. Keep the backup separate from application storage and credentials out of commands/logs. Local synthetic PostgreSQL restore and subsequent upgrade were tested; production backups and hosting recovery remain unverified.
+
+Recovery succeeds only when compatible accounts can log in, existing sessions and ownership checks work, study data remains readable/writable, guards and history remain correct, and the corrected candidate can restart without password downgrade or data loss. Migration 011 and repair 012 do not require a destructive schema downgrade. Restore a database only with explicit authorization and an accepted plan for post-backup writes; do not overwrite newer data merely to restore an older image. Actual hosted PostgreSQL selection, HTTPS cookie round trips, proxy forwarding, resource limits and auto-deploy suspension still require separate production verification. No test authorizes a merge or deployment.
 
 ## API
 All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attendance` routes need a logged-in session and only return or change the caller's own data. The app also provides a task calendar, browser deadline reminders and a CGPA tracker.
@@ -115,6 +157,19 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 | GET | `/api/attendance/summary` | Per-class allowance: hours you can still miss, attendance so far |
 
 ## Attendance rules
+
+PostgreSQL forward migration `011_class_name_legacy_updates.postgres.sql` replaces migration 010's NOT VALID name-length CHECK with insert and name-update triggers in one atomic DO statement, under an exclusive classes-table lock. Existing names are never rewritten. Legacy over-limit names can receive unrelated updates, including color-only PATCH; any requested name assignment must satisfy the existing limit, even if assigning the same value. Valid renames and new names still require 1–60 characters. Migration failure rolls back the enforcement replacement; its DDL is also repeatable if migration bookkeeping needs retrying. SQLite already has these trigger semantics and needs no 011 migration. Migration 010 and earlier files remain unchanged.
+
+The existing database guards trim ASCII spaces and count Unicode code points on both databases. The installed API validator also counts code points, but trims Unicode whitespace and rejects control characters. Thus direct SQL can still store a tab-only or non-breaking-space name that the API rejects; 011 preserves those existing database rules rather than broadening or silently changing validation. Browser length limits and some import preview checks use UTF-16 units and can restrict non-BMP names earlier than the API; that existing distinction is unchanged.
+
+Dates supplied for task deadlines, semester starts and attendance (including attendance query bounds) must be real Gregorian `YYYY-MM-DD` dates; impossible dates return `400` without writes. The optional semester start can still be cleared with `""`. Valid date strings retain their exact date without timezone conversion; existing invalid stored records are not rewritten.
+
+Timetable creation and imports perform their authoritative overlap checks and writes in one transaction. They acquire the same user-row lock before reading timetable/class data. PostgreSQL holds this database lock across connections and app instances, independently for each user; SQLite uses its existing queued shared connection and `BEGIN IMMEDIATE` single-writer transaction. Class renames/deletions and slot deletions coordinate with imports through the same lock. Transactions commit before responses and roll back/release locks on errors. Ordinary overlaps still return `409`, while adjacent sessions remain allowed.
+
+Imports deduplicate only exact sessions: case-insensitive class name, day, start/end, session type and trimmed room must agree. Identical re-imports still count as skipped. Same scheduling identity with different type or room returns `409` with `{ error, conflicts }`; metadata entries add `reason: "metadata"`, `fields` (`kind` and/or `room`), and `existing`/`incoming` objects containing those values. `row` is 1-based; `with` is a 1-based payload row or `"existing"`. Ordinary overlap entries keep their existing `{ row, with }` shape. No part of a conflicting import is committed. The preview retains conflicting source rows, identifies both sets of metadata and requires editing or excluding rows before import; it never overwrites stored metadata.
+
+PATCH on classes, tasks and courses uses an ownership-filtered atomic update returning the complete changed row. If concurrent deletion wins, PATCH returns the existing JSON `404` error; if PATCH wins, its complete snapshot remains a valid success even if deletion follows. Empty and partial patches and foreign-class `422`/missing-record `404` behavior remain supported. Frontend error handling must account for date `400`, metadata/clash `409` and missing-record `404` responses.
+
 - Present and approved leave both count as attended. Only absences use up the allowance.
 - Required attendance is 80% for Degree, Diploma and Foundation (`REQUIRED_PERCENT` in `src/timetable.ts`).
 - Semester type sets the teaching weeks: long = 14, short = 7. Allowance = 20% of (weekly class hours x teaching weeks), rounded down to whole hours.
@@ -123,12 +178,163 @@ All `/api/classes`, `/api/tasks`, `/api/courses`, `/api/slots` and `/api/attenda
 - An optional semester start date limits the log to that semester (from the start date for the number of teaching weeks), so old semesters do not count.
 - These are estimates. Check them against your faculty's official rules.
 
+## Security notes
+
+Registration intentionally returns 409 for an existing email, which reveals whether an account exists; concealing registration would require an email-based flow, and email is disabled on the demo.
+
+Passwords use native asynchronous scrypt with random 16-byte salts and 64-byte derived keys. P1-B writes `scrypt$v1$N=16384,r=8,p=5$<salt>$<key>` for registration, password resets and successful weaker-record upgrades. Legacy `salt:key`, older v1 8192/8/1 and previous-writer v1 16384/8/1 records remain readable and upgrade only after correct authentication or explicit reset. Existing p=5 login records remain byte-for-byte unchanged. Dormant accounts may still hold weaker records: there is no bulk rewrite and no claim that every stored password is already stronger.
+
+P1-A additionally reads exactly `scrypt$v1$N=16384,r=8,p=5$<salt>$<key>`. Version 1 still means 16-byte salt/64-byte key, encoded as exactly 32/128 hexadecimal characters. The reader whitelist is legacy 16384/8/1 and v1 8192/8/1, 16384/8/1, 16384/8/5; malformed encodings, trailing data, records over 240 characters and every other parameter combination fail safely. Every supported derivation uses the unchanged explicit 34 MiB maxmem ceiling; stored input cannot select arbitrary memory/CPU costs.
+
+**The active writer is 16384/8/5.** The P1-A checkpoint deliberately wrote p=1, while preserving already-strong resets; P1-B changes the ordinary policy without removing that recovery protection. Every supported-profile reset now uses p=5 with a fresh salt and revokes sessions. Hashing remains outside transactions. Conditional user updates prevent stale login/reset writes; upgrades and session creation commit atomically. Stale competing requests fail safely and can be retried; errors never fall back to weaker hashing or consume reset tokens on derivation failure. Real-user production remains NO-GO pending the remaining hardening stages.
+
+The estimated active-profile working buffers are **16.007 MiB per operation**; `maxmem=34 MiB` remains the explicit native allocation ceiling, not measured process usage. One process-wide queue still permits **two active operations and eight waiting** across registration, verification, dummy work, resets and upgrades. Saturation returns generic 503 with `Retry-After: 1`; reset tokens and previous sessions remain intact. Queueing and upgrade work can exceed the former 300 ms budget; stronger costs are never weakened automatically to hide resource pressure.
+
+P1-A selected **16384/8/5 (A)** for reader compatibility; P1-B activates it. Current OWASP guidance lists A–D as scrypt minimum configurations; A is the lowest-memory evaluated option, retains the maxmem ceiling and was fastest in that historical constrained Linux run. B doubles estimated memory, and C/D need larger ceilings and use four/eight times the algorithm memory; none improved latency in that run.
+
+Local constrained raw benchmarks (27 November 2026): Node 22.23.5 Alpine, Docker Desktop on an Intel i7-1165G7, **one CPU / 512 MiB / no swap / no network**. Each independent child performs three warm-ups, 30 single-operation samples and ten operations in five two-active batches. Times are milliseconds; max RSS is the process high-water including the concurrent phase, not the algorithm estimate or the whole container.
+
+| Profile N/r/p | maxmem MiB | Estimated MiB/op | Median | p95 | Max | Max RSS MiB | Two-active median |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Baseline 16384/8/1 | 34 | 16.003 | 31.6 | 43.8 | 111.3 | 101.9 | 82.0 |
+| A 16384/8/5 | 34 | 16.007 | 146.4 | 165.7 | 193.5 | 105.4 | 309.9 |
+| B 32768/8/3 | 34 | 32.005 | 182.8 | 214.7 | 237.5 | 138.0 | 383.9 |
+| C 65536/8/2 | 66 | 64.004 | 251.1 | 302.8 | 312.2 | 201.9 | 516.1 |
+| D 131072/8/1 | 130 | 128.003 | 288.5 | 368.2 | 401.1 | 328.0 | 582.9 |
+
+Native Windows Node 22.23.3 measurements were much more variable: A median/p95/max 880.7/950.1/962.8 ms, with a 76.9 MiB process high-water. The native HTTP future-writer fixture measured registration/login/legacy-upgrade medians 410.4/411.5/499.6 ms (p95 641.9/556.1/707.8 ms), with 117.4 MiB high-water. These separate local environments and changing load are not comparable production SLOs. Hosted resources and latency still need authorized verification; a 300 ms requirement may require more resources or a revised budget, never silently weaker production storage.
+
+The following historical P1-A Docker HTTP runs used isolated in-memory SQLite, the same CPU/memory limits, and three warm-ups plus 30 interleaved samples per category. Future writer here means an explicitly injected synthetic service at the P1-A checkpoint, not the actual activated P1-B writer. HTTP times include reading the response body.
+
+| HTTP path | Current writer median / p95 / max ms | Future-writer fixture median / p95 / max ms |
+|---|---:|---:|
+| Registration | 38.3 / 45.9 / 59.2 | 162.0 / 202.7 / 204.4 |
+| Normal login | 36.9 / 43.0 / 49.9 | 157.3 / 189.8 / 191.5 |
+| Legacy upgrade | 76.1 / 93.3 / 93.9 | 194.3 / 219.3 / 262.5 |
+
+Mixed-profile incorrect-password medians/p95 were current 164.5/196.1 ms, legacy 168.2/183.7, older 155.9/197.2, stronger 160.0/183.9, malformed 156.0/173.4 and unknown 159.5/220.1. The overlapping local distributions support bounded equal-work failure handling, not a guarantee against statistical enumeration. Current-writer and future-fixture 24-request bursts each completed ten strong logins, returned fourteen generic 503 responses, reached exactly two active/eight waiting, and recovered with an empty queue. The current-writer burst plus recovery took 2.34 seconds; health-probe median/p95/max were 1.7/58.1/58.2 ms. HTTP process high-waters were 137.1/134.0 MiB and event-loop p95/max were 11.0/67.4 ms and 11.1/70.3 ms respectively. RSS includes process/allocator overhead and is not a measurement of whole-container peak memory. These are local synthetic results, not hosted capacity or production-readiness evidence.
+
+Actual P1-B writer measurements on 28 November 2026 used the same Node 22.23.5 Alpine / one CPU / 512 MiB / no-swap constraints. The normal-login record comes from actual API registration; no future-writer service override is used. Three warm-ups and 30 interleaved samples per path were measured. All times are milliseconds; the P1-A column is the previously recorded synthetic future-writer fixture, not a simultaneous control.
+
+| Actual P1-B path | Median | p95 | Max | P1-A fixture median / p95 |
+|---|---:|---:|---:|---:|
+| Registration | 394.0 | 596.0 | 624.3 | 162.0 / 202.7 |
+| Normal p=5 login | 384.2 | 643.8 | 743.8 | 157.3 / 189.8 |
+| Legacy upgrade | 480.4 | 618.6 | 619.1 | 194.3 / 219.3 |
+| Older 8192/8/1 upgrade | 442.7 | 532.9 | 604.4 | Not measured |
+| Previous 16384/8/1 upgrade | 482.0 | 601.0 | 644.1 | Not measured |
+| Strong-account reset | 381.9 | 444.5 | 487.2 | Not measured |
+| Weaker-account reset | 391.6 | 446.1 | 564.6 | Not measured |
+| Incorrect p=1 | 396.1 | 467.1 | 639.5 | Not measured |
+| Incorrect legacy | 393.6 | 535.0 | 702.2 | Not measured |
+| Incorrect older | 376.3 | 521.1 | 644.6 | Not measured |
+| Incorrect p=5 | 388.5 | 553.4 | 598.7 | Not measured |
+| Malformed stored record | 390.0 | 594.2 | 648.1 | Not measured |
+| Unknown account | 384.6 | 503.0 | 676.7 | Not measured |
+
+Selected-profile raw median/p95/max were 219.0/249.1/252.3 ms (30 samples after three warm-ups), versus historical 146.4/165.7/193.5 ms. Ten raw operations in two-active batches measured median/p95/max 833.2/1203.7/1203.7 ms; raw process high-water was 106.0 MiB, compared with historical 105.4 MiB. The actual HTTP process peaked at 139.7 MiB versus P1-A fixture 134.0 MiB; event-loop p95/max were 16.2/111.0 ms. A 24-request strong-login burst accepted ten and returned fourteen generic 503 responses, reached exactly two active/eight waiting, and recovered to an empty queue. Burst plus recovery took 3.50 seconds; 71 concurrent health probes measured median/p95/max 2.6/58.4/75.3 ms.
+
+These runs were slower than P1-A's recorded fixture and exceed the former 300 ms HTTP budget. Host load and different runs prevent attributing the difference solely to writer activation. The selected profile, 34 MiB ceiling and queue capacities remain unchanged. Before production, verify representative host capacity and concurrency, provision adequate CPU/resources or revise the latency objective, and complete P2 admission/abuse controls. Do not silently weaken the cost. RSS is process high-water, not whole-container peak or a production-memory guarantee; hosting remains unverified.
+
+Historical Q1 raw-hash medians (three measured samples after warm-up; superseded for selection by the P1-A measurements above):
+
+| N | r | p | Observed median range (ms) | Estimated buffers (MiB) |
+|---|---|---|---|---|
+| 16384 | 8 | 1 | 46–209 | 16.003 |
+| 16384 | 8 | 2 | 424 | 16.004 |
+| 16384 | 8 | 3 | 137–620 | 16.005 |
+| 16384 | 8 | 4 | 841 | 16.006 |
+| 16384 | 8 | 5 | 220–527 | 16.007 |
+| 16384 | 8 | 6 | 265–594 | 16.008 |
+| 16384 | 8 | 7 | 541–802 | 16.009 |
+| 16384 | 8 | 8 | 348–980 | 16.010 |
+| 32768 | 8 | 2 | 181–502 | 32.004 |
+| 32768 | 8 | 3 | 268–689 | 32.005 |
+| 32768 | 8 | 4 | 358–967 | 32.006 |
+
+Run `node --import tsx scripts/benchmark-passwords.ts --profile=A` for the selected raw profile and `node --import tsx scripts/benchmark-auth.ts` for the actual activated writer, all supported upgrades, strong/weak resets, failed credentials and unknown/malformed accounts. Both scripts isolate database settings, use synthetic inputs and print metrics without credentials, records or tokens. The obsolete `--future-writer-fixture` option now requires running the immutable P1-A source instead. Three warm-ups precede 30 measured samples (nearest-rank percentiles). Raw profiles run in separate processes and include five two-operation batches. HTTP categories are interleaved and followed by a 24-request burst, generic-503/recovery assertions and health probes; failure paths are checked for unchanged records/session counts. Local Docker measurements do not establish actual hosted performance.
+
+Newly written records **meet the selected OWASP scrypt profile N=16384/r=8/p=5**; this is not comprehensive OWASP/NIST compliance, and dormant weaker records remain until authentication/reset. See [OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt). Actual Render performance remains unmeasured; resource/latency verification, trusted ingress, durable abuse controls and later account-policy work are still required. Do not weaken costs automatically if hosting cannot sustain them.
+
+Mixed-profile failed logins now target approximately N*p=81920 work under one queue permit: unknown/malformed/strong records use 16384/8/5; failed legacy/current verification adds fixed 16384/8/4 dummy work; failed older verification adds fixed 8192/8/9 dummy work. These two dummy-only combinations are not accepted stored profiles. Successful weak logins do not need failure padding. This bounds memory at the same ceiling and avoids five separate native calls; it increases failed-login CPU use and queue pressure. Native implementation details, split calls, database lookup, load, successful upgrades and networking still produce timing differences; no constant-time HTTP or comprehensive OWASP/NIST compliance is claimed. [NIST SP 800-63B-4](https://pages.nist.gov/800-63-4/sp800-63b/authenticators/) recommends practical cost factors and stored scheme/cost metadata, and has additional lifecycle/password-policy requirements reserved for later stages. P2-A makes ingress trust explicit; per-instance, restart-reset throttles still require P2-B.
+
+## Trusted ingress (P2-A)
+
+`src/ingress.ts` is the shared authentication client-identity boundary. Express `trust proxy` stays **false** in every mode; authentication never uses `req.ip` or an unknown fallback. Startup validates configuration before opening a database. `NODE_ENV=production` requires `INGRESS_MODE=direct` or `INGRESS_MODE=trusted-proxy`; development defaults to direct. Unknown modes, conflicting direct-mode proxy settings, invalid ranges and unrestricted trust fail with static errors that contain no configuration values.
+
+| Mode | Contract |
+|---|---|
+| `direct` | The actual socket peer is the client. All forwarding headers are ignored without parsing. `TRUSTED_PROXY_CIDRS` must be empty. Use for an intentionally direct-facing application; behind a load balancer this identifies the balancer, not the original user. |
+| `trusted-proxy` | `TRUSTED_PROXY_CIDRS` must list 1–32 explicitly authorized literal IPs/CIDRs (comma-separated, maximum 4,096 configuration characters). The immediate socket peer must belong to them or the request gets generic 403. Loopback/private ranges receive no automatic trust. Every permitted sender must be protected from impersonation by a verified network boundary. |
+
+Trusted-proxy requests require exactly one `X-Forwarded-For` field. Each authorized intermediary must overwrite untrusted forwarding input or append its **observed** peer. Resolution starts at the authenticated socket peer, then walks the header right to left, crossing only explicitly trusted ranges. The nearest untrusted address is the client; anything it claims to its left is ignored. Multiple trusted intermediaries work only when each is configured and sanitizes/appends correctly. An unexpected untrusted intermediary becomes the conservative client identity, potentially sharing one bucket; it cannot delegate trust to its preceding claims. An all-trusted chain has no distinct client and is rejected.
+
+The parsed field is limited to 2,048 UTF-8 bytes and 16 addresses before IP parsing; Node also enforces its HTTP header bound. Missing/duplicate fields, duplicate canonical addresses, empty elements, invalid IPs, ports, brackets, zones, unknown/obfuscated values and over-limit chains get generic 400, with `Cache-Control: no-store`, before authentication or password-queue admission. Missing/invalid socket identity also gets 400. IPv6 case/compression normalize; true IPv4-mapped IPv6 normalizes to IPv4. Exact IPv6 addresses remain separate: there is no new /64 policy, and address rotation remains an abuse-control gap. Literal /0, mapped all-address ranges, wildcard/named ranges and unions covering an entire address family are forbidden. CIDR host bits are masked; every address within an allowed range is trusted, so operators must choose narrow, verified ranges.
+
+`Forwarded`, `X-Real-IP` and `CF-Connecting-IP` are unsupported and ignored. Forwarded Host/protocol never control application Origin checks, `APP_URL` or cookie decisions. Existing Origin/Fetch Metadata checks, body limits, API privacy, and production Secure/HttpOnly/SameSite=Lax flags remain. The boundary applies to **all requests**, including static files and `/api/health`; there is no health-check bypass or weaker fallback. Health-check senders must satisfy the chosen contract without changing the health response.
+
+Official documentation reviewed **28 November 2026**:
+
+- [Express behind proxies](https://expressjs.com/en/guide/behind-proxies/) documents socket-based direct identity, right-to-left address trust, numeric-hop risks on shorter paths, and the Host/protocol effects of enabling proxy trust. This implementation keeps those latter inputs untrusted and validates identity separately.
+- [Render web services](https://render.com/docs/web-services) documents public routing, TLS termination at its load balancer and HTTP forwarding; the app port is not directly reachable from the public internet. This does not authenticate every possible sender to this application.
+- [Render's forwarding discussion](https://render.com/articles/host-pocketbase-on-render) describes public Cloudflare/load-balancer routing, XFF appending and rejection of forged public `CF-Connecting-IP`. It also warns that private callers bypass Cloudflare and can forge that header. Header presence alone is not an authenticated boundary.
+- [Render private networking](https://render.com/docs/private-network) documents alternate private paths and changing instance addresses; free web services cannot receive private traffic. Actual service plan, callers and routing remain unverified. [Outbound ranges](https://render.com/docs/outbound-ip-addresses) identify outbound traffic, not an inbound proxy allowlist.
+
+**Deployment blocker:** these public documents do not establish this service's authorized immediate-peer CIDRs, complete hop topology, forwarding sanitization on every path, or health-check headers. Actual Render configuration was not accessed. Before release an authorized operator must verify public/custom-domain/private/health paths, authoritative peer ranges and ownership, append/overwrite behavior, direct-port isolation, HTTPS cookie round trips and failure behavior across restarts. If the platform boundary cannot be authenticated, place the app behind an operator-controlled, verified gateway with a private/restricted application port and explicit trusted peers; separately authorize that arrangement. Do not guess Render CIDRs, use outbound ranges, trust a fixed hop count, trust arbitrary private/loopback peers, or choose direct mode as a workaround for unknown hosted client identity. **Real-user production remains NO-GO.**
+
+Local evidence uses actual separate proxy sockets, not injected request identities. The shared test proxy replaces XFF from a synthetic fixture selector stripped before forwarding; only the test harness recognizes that selector. An isolated image of immutable P1-B `63fb693d08a04937ffd6a1c6522d37512397385c` returned 429 after ten invalid resets but 400 after changing forged XFF, demonstrating a fresh bucket. The new direct mode and appending-proxy smoke retain 429 despite that change. The former local proxy TODO is now a passing regression; actual Render verification remains outstanding. Local production Docker smoke also covers intentional configuration failure before DB access, untrusted/direct rejection, Origin rejection, API no-store, unchanged config shape, p=5 registration/login and cookie flags. It does not prove real HTTPS browser round trips or actual hosting safety. Run `node scripts/test-ingress-docker.mjs`; CI runs it in the Docker job. Private evidence is written under the OS temporary directory and disposable containers are removed.
+
+## Abuse controls and P2-B proposal (not implemented)
+
+All existing numeric policies remain unchanged. The IP keys below now use the same canonical boundary identity. In-memory stores use process time, reset on restart/deploy, and cannot coordinate multiple instances.
+
+| Existing store | Key, threshold and expiry | Persistence, concurrency and bounds |
+|---|---|---|
+| `LoginLimits` | Normalized email/IP pair: 5 failures; canonical IP across accounts: 30; rolling 15 minutes. Success clears only its own pair. | Process-local synchronous admission with pending reservations and single-use completion. Each map caps at 4,096 keys; global expiry pruning, no active eviction, capacity pressure 429/60s; pending pressure 429/1s. No distributed leases or persistence. |
+| `InMemoryAuthFailureStore` | Separate normalized-email and canonical-IP keys, 5 failures/15 minutes, shared by registration failures, forgot requests and incorrect-password email changes. Successful registration/password check clears only email. Limited forgot requests retain generic 200 and suppress delivery. | Process-local synchronous map operations; only touched keys expire. No hard key cap/global cleanup or cross-process reservations. Concurrent async work can pass a check before another request records failure. |
+| Token consumption | Route/IP, reset and email verification: 10 attempts/15 minutes, including malformed input; 429 with remaining-window Retry-After. | Process-local synchronous admission; expired inactive keys pruned on requests, arrays bounded by 10, no hard map-key cap. Confirm-email-change has no equivalent consumption limiter. |
+| Verification resend | Email enabled: opaque user ID; disabled: canonical IP. One per minute and five/24 hours. | Process-local synchronous map; only touched keys expire, no hard map-key cap/global cleanup. Restart resets controls. |
+| Database `auth_tokens` issuance/consumption | User/purpose; supersedes unused same-purpose tokens. Verification/email change 24 hours, reset 30 minutes; hashed tokens, single use. | Durable transactions with user-row serialization and conditional consumption; cross-instance PostgreSQL locking/SQLite transaction. Not a frequency limiter. No dedicated expired/used-token GC or hard total-row cap. |
+| `HashQueue` | Process-wide, keyless: 2 active and 8 waiting native operations; saturation generic 503/Retry-After 1. | In-process bounded queue, finally releases permits; no wait TTL/client-abandonment lease or distributed cap. Restart drops pending work. Native scrypt stays 16384/8/5, maxmem 34 MiB, outside DB transactions. |
+| Adjacent import limiter | Opaque user ID, 10 imports/hour. | Process-local synchronous map; globally prunes hour-idle users, no hard active-key cap. Not an authentication control. |
+
+Successful-registration volume, distributed spraying, email-change confirmation consumption, IPv6 rotation, per-instance restarts, stale reservations and unbounded auxiliary keys/rows remain gaps. This inventory does not claim durable abuse protection.
+
+| P2-B option | Evaluation |
+|---|---|
+| Existing PostgreSQL | Preferred first evaluation: persistent atomic counters/reservations using the existing driver. Requires a separately authorized migration, bounded indexed storage, short transactions and lock/statement timeouts; adds DB load and requires outage handling. No new dependency is inherently needed. |
+| Dedicated shared limiter/KV | Consider only if measurements justify isolation/latency advantages. Requires separately authorized infrastructure and possibly a dependency, with explicit persistence, failover, eviction and availability guarantees; shared memory alone does not guarantee durability. |
+| Verified infrastructure controls | Complement application controls with verified edge/global admission and DDoS defenses covering every ingress path. They do not replace user/purpose-aware counters and require separate hosting authorization. |
+
+Proposed PostgreSQL design: preserve rolling 15-minute pair/IP behavior and successful-login own-pair clearing. Atomically reserve both scopes in a fixed lock order, with trusted database time and short transactions; finish/failure recording must be idempotent across instances. Keep native hashing outside transactions. Give each in-flight reservation a unique ID and expiry; reclaim after crashes and reconcile safely so a restart neither erases failures nor leaves permanent lockouts. Set hard global/per-scope storage and admission bounds, TTLs and chunked cleanup without evicting active lockouts. Storage/lock pressure or unavailable shared state should return generic 503/Retry-After with bounded waits, never silently switch to local counters; keep health/static paths responsive.
+
+Use purpose-separated pseudonymous HMAC keys rather than raw emails/IPs in the proposed store; a stable secret and rotation-overlap policy need separate authorization. Avoid logging chains or identifiers. Evaluate distributed spraying and account-targeted denial of service without allowing attacker-triggered permanent lockouts or broad IPv6 aggregation. Preserve current thresholds first; any additional successful-registration, reset/verification/email-change, per-client or global policy values need explicit approval. Plan backward-compatible migration/readers, phased activation and recovery: P1-A cannot enforce a new durable store or continuous p=5 writes, so external maintenance restrictions remain necessary.
+
+P2-B validation must use two independent app instances/pools and cover atomic competing admission, restarts, crashes/lease reclamation, duplicate finish, trusted-clock windows, own-pair success clearing, unrelated lockouts, bounded cleanup/storage pressure, DB outage/backpressure, distributed/account-targeted abuse, canonical/proxy identity and password-queue recovery. A new migration, stable HMAC configuration secret or additional infrastructure must be authorized separately. None is created in P2-A.
+
 ## Known limits
-- Authentication rate limits count five failed attempts per email and IP in a rolling 15-minute window. The in-memory counters reset on server restart and are not shared between server instances.
+Frontend mutations report success or failure explicitly. Failed class, task and course creation retains the draft; pending submissions are disabled and are never retried automatically. Initial datasets load independently, with unavailable data distinguished from an empty result and a Retry loading action. Semester edits remain visibly unsaved after failure. Task and course mutations are ordered per record and use authoritative server snapshots; obsolete attendance-week and previous-session responses are ignored.
+
+Password-reset links open the reset form whether signed in or signed out. The link identifies the account being reset, which may differ from the current session. The existing 30-minute expiry, single-use and session-invalidation rules remain unchanged; after success the frontend removes the reset URL parameter and rechecks the current session. Cancellation returns to the current application/login state. Email-disabled demo recovery remains unavailable.
+
+Calendar features use the Asia/Kuala_Lumpur day in every browser timezone. Dashboard, its navigation badge, Tasks, Timetable and Progress share one day subscription per authenticated shell; it reevaluates at Malaysia midnight and on focus/visibility recovery. Date-only deadlines, attendance and semester dates stay `YYYY-MM-DD`, with UTC calendar arithmetic and date-only formatting that cannot shift them into another day. The current week/month follows rollovers; deliberately selected periods stay selected until This week/This month is used. Automatic period replacement waits while focus is inside that period, or its task/attendance mutation or timetable import is pending, then catches up when that work finishes and focus leaves. Form drafts and open dialogs remain intact. No polling or server/API date conversion is involved.
+
+Deadline reminders reevaluate at Malaysia midnight while the application is open, and on focus/visibility recovery. Each check uses the current day, so delayed execution after sleep catches up without replaying missed days. Per-user, per-task daily deduplication remains in place; timers are cancelled on dependency changes, logout and unmount. Browser throttling can delay delivery. Reminders are not guaranteed while the browser or application is closed; real operating-system delivery and Render behavior have not been verified by the automated, stubbed notification tests.
+
+Logout and account changes are synchronized across tabs using BroadcastChannel with a storage-event fallback. Messages carry only an event type and random nonce, never account data. Focus and visibility checks hide the account view until the session is verified; a changed or invalid session discards the previous account state. If both browser mechanisms are blocked, focus/visibility checks still protect returning tabs.
+
+Notification deduplication history uses only the opaque user ID in its storage key. The old shared key is removed on startup and logout. The app closes notifications it created when an account is cleared, where the browser API permits; the operating system's notification history is outside the app's control.
+
+- Login limits count five failed attempts per normalized email/IP pair and 30 per IP across emails in a rolling 15-minute window. A successful login clears only its own pair, preserving aggregate and other-client counters. In-flight attempts reserve capacity; temporary saturation returns 429 with `Retry-After: 1`, while actual lockouts report their remaining window. Pair/IP maps each retain at most 4,096 keys; capacity pressure rejects new keys with 429 and `Retry-After: 60` rather than evicting active limits. Idle expired entries are reclaimed. Registration, forgot-password and email-change checks retain their separate existing throttling and responses. These counters are in memory, per instance, and reset on every restart/deploy; they are not distributed. IP protection depends on trustworthy resolved client IPs; live Render forwarding behavior remains unverified.
 - Reset and email-verification token consumption each allow ten attempts per IP per 15 minutes, including malformed requests. Limited requests return 429 with `Retry-After`.
 - Free hosts can sleep or restart, and their limits can change. Use hosted PostgreSQL and review your provider's current plan before sharing the demo.
 
+## Known dev-tooling audit findings
+
+The production-only audits report **0 production findings**. After the approved Vite 8.3.3, fast-uri 3.1.9 and serialize-javascript 7.1.3 patch updates, the web audit still reports four moderate dev-only findings: glob, minimatch, and their workbox-build / vite-plugin-pwa dependency chain. These tools run during development/builds, not in the deployed Express runtime. Fixing the remaining chain requires versions outside the current parent ranges or an incompatible plugin downgrade; those changes have not been applied or approved. No forced audit fix or major override was used.
+
 ## Roadmap
+- [x] Q3 task-control pointer access, session recovery, responsive layout, contrast, native calendar semantics and live Malaysia-date consistency.
 - [x] Accounts and per-user data
 - [x] React + TypeScript frontend
 - [x] Class timetable

@@ -13,7 +13,7 @@ test('account setup and task progress persist across login', async ({ page }) =>
   await page.getByRole('button', { name: 'Profile' }).click();
   await page.getByLabel('Course type').selectOption({ label: 'Degree' });
   await page.getByRole('button', { name: 'Save profile' }).click();
-  await expect(page.getByRole('status')).toHaveText('Profile saved.');
+  await expect(page.getByRole('status').filter({ hasText: /^Profile saved\.$/ })).toHaveText('Profile saved.');
 
   await page.getByRole('button', { name: 'Classes' }).click();
   await page.getByLabel('Class name').fill('E2E Databases');

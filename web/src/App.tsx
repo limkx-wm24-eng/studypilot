@@ -1,15 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, type User } from './api';
 import { useStore } from './store';
+import { useMalaysiaDay } from './useMalaysiaDay';
 import { daysLeft, type Tab } from './util';
 import { useDeadlineNotifications } from './notifications';
+import { useUserSession, type UpdateUser, type UserUpdateSource } from './useUserSession';
 import Auth from './pages/Auth';
+import ResetPassword from './pages/ResetPassword';
 import Dashboard from './pages/Dashboard';
 import Classes from './pages/Classes';
 import Tasks from './pages/Tasks';
 import Timetable from './pages/Timetable';
 import Progress from './pages/Progress';
-import Profile from './pages/Profile';
+import Profile, { useProfileEditor } from './pages/Profile';
 import { listenForToasts } from './toast';
 
 type TabIconName = 'dashboard' | 'classes' | 'tasks' | 'timetable' | 'progress' | 'profile';
@@ -36,8 +39,21 @@ function TabIcon({ name }: { name: TabIconName }) {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-  const [online, setOnline] = useState(() => navigator.onLine);
+  const session = useUserSession();
+  const { user, accountView, checking, sessionError, sessionKey, online, recheckSession } = session;
+  const [resetAction, setResetAction] = useState<{ token: string | null } | null>(() => {
+    const token = new URLSearchParams(window.location.search).get('reset');
+    return token ? { token } : null;
+  });
+  const stripReset = () => {
+    const url = new URL(window.location.href); url.searchParams.delete('reset');
+    window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+  };
+  useEffect(() => {
+    const navigation = () => { const token = new URLSearchParams(window.location.search).get('reset'); setResetAction(token ? { token } : null); };
+    window.addEventListener('popstate', navigation);
+    return () => window.removeEventListener('popstate', navigation);
+  }, []);
   const [emailAction] = useState(() => {
     const params = new URLSearchParams(window.location.search);
     const confirmEmail = params.get('confirm-email');
@@ -51,15 +67,12 @@ export default function App() {
       url.searchParams.delete('confirm-email');
       window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
     }
-    api.get<User>('/api/auth/me').then(setUser).catch(() => setUser(null));
-    const refresh = () => setOnline(navigator.onLine);
-    window.addEventListener('online', refresh);
-    window.addEventListener('offline', refresh);
-    return () => { window.removeEventListener('online', refresh); window.removeEventListener('offline', refresh); };
   }, [emailAction]);
+  if (resetAction) return <ResetPassword key={resetAction.token ?? 'complete'} token={resetAction.token} online={online} onSuccess={() => { stripReset(); setResetAction({ token: null }); recheckSession(); }} onClose={() => { stripReset(); setResetAction(null); recheckSession(); }} />;
   if (emailAction) return <EmailAction type={emailAction.type} token={emailAction.token} />;
-  if (user === undefined) return <main><LoadingState /></main>;
-  return user ? <Shell user={user} setUser={setUser} online={online} /> : <Auth onUser={setUser} online={online} />;
+  return <>{sessionError && <p className="banner" role="alert">{sessionError} <button className="link" onClick={() => void recheckSession()}>Retry session</button></p>}{checking && <main><LoadingState /></main>}<div ref={accountView} hidden={checking} inert={checking}>
+    {user === undefined ? null : user ? <Shell key={`${user.id}:${sessionKey}`} user={user} setUser={session.leaveAccount} updateUser={session.updateUser} pendingUpdates={session.pendingUpdates} isUserPending={session.isUserPending} online={online} sessionReady={!checking} /> : <Auth key={sessionKey} onUser={session.acceptLogin} online={online} />}
+  </div></>;
 }
 
 function LoadingState() {
@@ -93,36 +106,45 @@ function EmailAction({ type, token }: { type: 'verify' | 'confirm-email'; token:
   </main>;
 }
 
-function Shell({ user, setUser, online }: { user: User; setUser: (user: User | null) => void; online: boolean }) {
+function Shell({ user, setUser, updateUser, pendingUpdates, isUserPending, online, sessionReady }: { user: User; setUser: () => void; updateUser: UpdateUser; pendingUpdates: ReadonlySet<UserUpdateSource>; isUserPending: (source: UserUpdateSource) => boolean; online: boolean; sessionReady: boolean }) {
   const [tab, setTab] = useState<Tab>('dash');
   const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
   const toastId = useRef(0);
   const store = useStore();
-  const notifications = useDeadlineNotifications(store.tasks, user.reminderDays);
-  const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due) < 0 || daysLeft(task.due) <= user.reminderDays)).length;
+  const today = useMalaysiaDay(sessionReady);
+  const profileEditor = useProfileEditor(user, updateUser);
+  const summarySettings = `${user.courseType}:${user.semesterStart}:${user.semesterWeeks}`;
+  const previousSummarySettings = useRef(summarySettings);
+  useEffect(() => {
+    if (previousSummarySettings.current === summarySettings) return;
+    previousSummarySettings.current = summarySettings;
+    void store.refreshSummary();
+  }, [summarySettings]);
+  const notifications = useDeadlineNotifications(user.id, store.tasks, user.reminderDays, sessionReady);
+  const attentionCount = store.tasks.filter((task) => task.status !== 'Complete' && (daysLeft(task.due, today) < 0 || daysLeft(task.due, today) <= user.reminderDays)).length;
   useEffect(() => listenForToasts((message) => setToast({ id: ++toastId.current, message })), []);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(null), 2600);
     return () => window.clearTimeout(timer);
   }, [toast]);
-  const changeUser = (nextUser: User | null) => {
-    setUser(nextUser);
-    if (nextUser) store.refreshSummary();
-    else void caches.delete('api-network-first');
-  };
+  const required = tab === 'profile' ? [] : tab === 'progress' ? ['classes', 'tasks', 'courses'] as const : tab === 'timetable' ? ['classes', 'slots'] as const : tab === 'dash' ? ['classes', 'tasks', 'slots'] as const : ['classes', 'tasks'] as const;
+  const unavailable = required.some((key) => !store.loads[key].loaded);
+  const loading = required.some((key) => !store.loads[key].loaded && store.loads[key].loading);
+  const loadErrors = Object.entries(store.loads).filter(([, value]) => value.error);
   return <><header><div className="brand-lockup"><span className="logo-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M7 6.5h18v19H7z" /><path d="M11 11h10M11 15h10M11 19h7" /></svg></span><h1>StudyPilot</h1></div><nav aria-label="Main navigation">{TABS.map(([key, label, icon]) => <button key={key} data-tab={key} aria-current={key === tab ? 'page' : undefined} onClick={() => setTab(key)}><span className="nav-icon" aria-hidden="true"><TabIcon name={icon} /></span><span>{label}{key === 'dash' && attentionCount > 0 ? ` (${attentionCount})` : ''}</span></button>)}</nav><span className="user-avatar" aria-hidden="true">{user.name.trim().charAt(0).toUpperCase() || user.email.charAt(0).toUpperCase()}</span></header>
     <main>
       {!online && <p className="offline-banner" role="status">You are offline. Saved app screens are available, but changes are read-only until you reconnect.</p>}
       {store.error && <p className="banner" role="alert">{store.error} <button className="link" onClick={store.clearError}>Dismiss</button></p>}
+      {loadErrors.length > 0 && <p className="banner" role="alert">Could not load {loadErrors.map(([key]) => key).join(', ')}. <button className="link" onClick={store.retryLoad} disabled={Object.values(store.loads).some((load) => load.loading)}>Retry loading</button></p>}
       <fieldset className="app-content" disabled={!online} aria-label={online ? undefined : 'Read-only while offline'}>
-        {store.loading ? <LoadingState />
-          : tab === 'dash' ? <Dashboard name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
+        {loading ? <LoadingState /> : unavailable ? <p role="status">Some data is unavailable. Retry loading to continue.</p>
+          : tab === 'dash' ? <Dashboard today={today} name={user.name} reminderDays={user.reminderDays} emailVerified={user.emailVerified} {...store} go={setTab} />
           : tab === 'classes' ? <Classes {...store} />
-          : tab === 'tasks' ? <Tasks {...store} />
-          : tab === 'timetable' ? <Timetable {...store} onUser={changeUser} />
-          : tab === 'progress' ? <Progress {...store} user={user} onUser={changeUser} go={setTab} />
-          : <Profile user={user} setUser={changeUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
+          : tab === 'tasks' ? <Tasks {...store} today={today} />
+          : tab === 'timetable' ? <Timetable {...store} today={today} updateUser={updateUser} />
+          : tab === 'progress' ? <Progress {...store} today={today} user={user} saving={pendingUpdates.has('semester')} isUserPending={isUserPending} updateUser={updateUser} go={setTab} />
+          : <Profile user={user} editor={profileEditor} setUser={setUser} permission={notifications.permission} requestNotifications={notifications.requestPermission} />}
       </fieldset>
     </main>{toast && <p key={toast.id} className="toast" role="status">{toast.message}</p>}</>;
 }

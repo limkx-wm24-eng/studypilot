@@ -4,6 +4,22 @@ import { openDb, type Database } from '../../src/db.js';
 import { requireTestDatabaseUrl } from './postgresSafety.js';
 
 export const testDialect = process.env.STUDYPILOT_TEST_POSTGRES === '1' ? 'postgres' : 'sqlite';
+const peers = new WeakMap<Database, () => Promise<Database>>();
+
+/** A second application instance: a separate PostgreSQL pool in the same guarded
+ * schema, or a second facade over SQLite's intentionally shared memory connection.
+ * Close peers before closing the schema-owning database.
+ */
+export async function openTestPeer(database: Database): Promise<Database> {
+  if (testDialect === 'sqlite') return {
+    all: database.all.bind(database), get: database.get.bind(database), run: database.run.bind(database),
+    exec: database.exec.bind(database), transaction: database.transaction.bind(database), close: async () => {},
+  };
+  const open = peers.get(database);
+  if (!open) throw new Error('A peer requires an existing isolated test schema.');
+  try { return await open(); }
+  catch { throw new Error('Could not open the isolated PostgreSQL test peer.'); }
+}
 
 export async function openTestDb(migrationsThrough?: number): Promise<Database> {
   if (testDialect === 'sqlite') return openDb(':memory:', { databaseUrl: '', migrationsThrough });
@@ -22,6 +38,7 @@ export async function openTestDb(migrationsThrough?: number): Promise<Database> 
     const isolatedUrl = new URL(databaseUrl);
     isolatedUrl.searchParams.set('options', `-c search_path=${schema}`);
     db = await openDb(':memory:', { databaseUrl: isolatedUrl.toString(), migrationsThrough });
+    peers.set(db, () => openDb(':memory:', { databaseUrl: isolatedUrl.toString(), migrationsThrough }));
   } catch {
     if (created) await admin.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {});
     await admin.end();

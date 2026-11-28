@@ -8,8 +8,10 @@ import { deleteExpiredSessions } from '../src/auth.js';
 import { openTestDb } from './support/database.js';
 import type { Email, Mailer } from '../src/mailer.js';
 import type { Database } from '../src/db.js';
+import { startSyntheticIngress, syntheticIngressConfig } from './support/syntheticIngress.ts';
 
 let server: Server;
+let proxy: Awaited<ReturnType<typeof startSyntheticIngress>>;
 let base = '';
 let db: Database;
 let mailer: MemoryMailer;
@@ -38,13 +40,11 @@ before(async () => {
   process.env.APP_URL = 'https://studypilot.example.test';
   db = await openTestDb();
   mailer = new MemoryMailer();
-  const app = createApp(db, { mailer });
-  app.set('trust proxy', 1);
-  await new Promise<void>((done) => { server = app.listen(0, done); });
-  base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const app = createApp(db, { mailer, ingress: syntheticIngressConfig() });
+  proxy = await startSyntheticIngress(app);server=proxy.server;base=proxy.base;
 });
 after(async () => {
-  if (server) await new Promise<void>((done) => server.close(() => done()));
+  if (proxy) await proxy.close();
   if (db) await db.close();
   if (originalAppUrl === undefined) delete process.env.APP_URL;
   else process.env.APP_URL = originalAppUrl;
@@ -53,7 +53,7 @@ after(async () => {
 const send = (method: string, path: string, body?: unknown, cookie?: string, ip = '127.0.0.1') =>
   fetch(base + path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}) },
+    headers: { 'Content-Type': 'application/json', 'X-StudyPilot-Test-Client': ip, ...(cookie ? { Cookie: cookie } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 let n = 0;
@@ -440,7 +440,7 @@ test('remember me controls persistent login cookies', async () => {
   assert.match(rememberedLogin.headers.getSetCookie()[0], /max-age=1209600/i);
 });
 
-test('five failed login attempts lock the email and IP with Retry-After', async () => {
+test('five failed login attempts lock the email/IP pair with Retry-After', async () => {
   const address = email();
   const ip = '198.51.100.1';
   assert.equal((await send('POST', '/api/auth/register', { email: address, password: 'password123' }, undefined, ip)).status, 201);

@@ -3,8 +3,8 @@ services:
     runtime: docker
     name: studypilot
     plan: free
-    dockerContext: ./studypilot
-    dockerfilePath: ./studypilot/Dockerfile
+    dockerContext: .
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV

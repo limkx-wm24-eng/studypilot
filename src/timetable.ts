@@ -2,13 +2,15 @@ import type { Express, RequestHandler, Response } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { type Database, type DbRow } from './db.js';
+import { calendarDate, singleLineText } from './validation.js';
+import { withUserTransaction } from './userTransaction.js';
 
 export const REQUIRED_PERCENT: Record<string, number> = { Degree: 80, Diploma: 80, Foundation: 80 };
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
-const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const date = calendarDate;
 export const slotFields = z.object({
   kind: z.enum(['Lecture', 'Practical', 'Tutorial']), weekday: z.number().int().min(1).max(7),
-  start: time, end: time, room: z.string().trim().max(30).default(''),
+  start: time, end: time, room: singleLineText.max(30).default(''),
 });
 export const validSlotOrder = (slot: { start: string; end: string }) => slot.end > slot.start;
 const slotBody = slotFields.extend({ classId: z.string().min(1).max(64) })
@@ -36,15 +38,17 @@ export function timetableRoutes(app: Express, db: Database, auth: RequestHandler
       return void res.status(400).json({ error: custom ?? 'Check the class, day and times' });
     }
     const slot = parsed.data;
-    if (!await db.get('SELECT 1 FROM classes WHERE id = ? AND user_id = ?', [slot.classId, uid(res)])) return void res.status(422).json({ error: 'Unknown classId' });
-    const clash = await db.get(`${SLOT_SQL} AND s.weekday = ? AND s.start_time < ? AND s.end_time > ?`, [uid(res), slot.weekday, slot.end, slot.start]);
-    if (clash) return void res.status(409).json({ error: 'This time overlaps another class on the same day' });
-    const id = randomUUID();
-    await db.run('INSERT INTO slots (id, class_id, kind, weekday, start_time, end_time, room) VALUES (?, ?, ?, ?, ?, ?, ?)', [id, slot.classId, slot.kind, slot.weekday, slot.start, slot.end, slot.room]);
-    res.status(201).json(toSlot((await getSlot(id, uid(res)))!));
+    const result = await withUserTransaction(db, uid(res), async (transaction) => {
+      if (!await transaction.get('SELECT 1 FROM classes WHERE id = ? AND user_id = ?', [slot.classId, uid(res)])) return { status: 422, body: { error: 'Unknown classId' } };
+      const clash = await transaction.get(`${SLOT_SQL} AND s.weekday = ? AND s.start_time < ? AND s.end_time > ?`, [uid(res), slot.weekday, slot.end, slot.start]);
+      if (clash) return { status: 409, body: { error: 'This time overlaps another class on the same day' } };
+      const row = await transaction.get('INSERT INTO slots (id, class_id, kind, weekday, start_time, end_time, room) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *', [randomUUID(), slot.classId, slot.kind, slot.weekday, slot.start, slot.end, slot.room]);
+      return { status: 201, body: toSlot(row!) };
+    });
+    res.status(result.status).json(result.body);
   });
   app.delete('/api/slots/:id', async (req, res) => {
-    const result = await db.run('DELETE FROM slots WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE user_id = ?)', [req.params.id, uid(res)]);
+    const result = await withUserTransaction(db, uid(res), (transaction) => transaction.run('DELETE FROM slots WHERE id = ? AND class_id IN (SELECT id FROM classes WHERE user_id = ?)', [req.params.id, uid(res)]));
     if (!result.changes) return void res.status(404).json({ error: 'Class time not found' });
     res.status(204).end();
   });

@@ -2,18 +2,20 @@ import { useState } from 'react';
 import type { Store } from '../store';
 import EmptyState from '../EmptyState';
 
-type Props = Pick<Store, 'classes' | 'tasks' | 'addClass' | 'removeClass'>;
+type Props = Pick<Store, 'classes' | 'tasks' | 'addClass' | 'removeClass' | 'isPending'>;
 
-export default function Classes({ classes, tasks, addClass, removeClass }: Props) {
+export default function Classes({ classes, tasks, addClass, removeClass, isPending }: Props) {
   const [name, setName] = useState('');
   return (
     <>
       <p className="hint">Add the classes you take. Tasks and grades belong to a class.</p>
-      <form className="row" onSubmit={async (e) => { e.preventDefault(); await addClass(name.trim()); setName(''); }}>
+      <form className="row" onSubmit={async (e) => { e.preventDefault(); if (await addClass(name.trim())) setName(''); }}>
+        <fieldset className="app-content row" disabled={isPending('addClass')} aria-busy={isPending('addClass')}>
         <label>Class name
           <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} required placeholder="e.g. Database Systems" />
         </label>
         <button className="btn">Add class</button>
+        </fieldset>
       </form>
       <div className="list">
         {classes.map((c) => {
