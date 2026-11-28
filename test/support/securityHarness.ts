@@ -5,18 +5,21 @@ import { openTestDb } from './database.js';
 import type { Email } from '../../src/mailer.js';
 import type { AddressInfo } from 'node:net';
 import type { PasswordService } from '../../src/passwords.js';
+import { loadIngressConfig } from '../../src/ingress.js';
+import { startSyntheticIngress, syntheticIngressConfig } from './syntheticIngress.ts';
 
-export async function securityHarness(production = false, mailEnabled = true, passwords?: PasswordService) {
+export async function securityHarness(production = false, mailEnabled = true, passwords?: PasswordService, ingressMode: 'synthetic-proxy' | 'direct' = 'synthetic-proxy') {
   const previousMode = process.env.NODE_ENV;
   const previousUrl = process.env.APP_URL;
   process.env.NODE_ENV = production ? 'production' : 'test';
   process.env.APP_URL = 'https://synthetic.example.test';
   const db = await openTestDb();
   const messages: Email[] = [];
-  const app = createApp(db, { passwords, mailer: { enabled: mailEnabled, async send(message) { messages.push(message); } } });
-  const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const app = createApp(db, { passwords, ingress: ingressMode==='direct'?loadIngressConfig({INGRESS_MODE:'direct'}):syntheticIngressConfig(), mailer: { enabled: mailEnabled, async send(message) { messages.push(message); } } });
+  const proxy = ingressMode==='synthetic-proxy'?await startSyntheticIngress(app):undefined;
+  const server = proxy?.server ?? app.listen(0, '127.0.0.1');
+  if(!proxy) await new Promise<void>((resolve) => server.once('listening', resolve));
+  const base = proxy?.base ?? `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const send = (method: string, path: string, body?: unknown, cookie?: string, headers: Record<string, string> = {}) => fetch(base + path, {
     method, headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -43,7 +46,7 @@ export async function securityHarness(production = false, mailEnabled = true, pa
   ));
   return { db, app, base, send, register, seed, snapshot, messages,
     async close() {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      if(proxy) await proxy.close(); else await new Promise<void>((resolve) => server.close(() => resolve()));
       await db.close();
       if (previousMode === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousMode;
       if (previousUrl === undefined) delete process.env.APP_URL; else process.env.APP_URL = previousUrl;

@@ -5,6 +5,7 @@ import { createApp } from '../src/app.js';
 import { createMailer, EMAIL_UNAVAILABLE } from '../src/mailer.js';
 import { openTestDb } from './support/database.js';
 import type { AddressInfo } from 'node:net';
+import { startSyntheticIngress, syntheticIngressConfig } from './support/syntheticIngress.ts';
 
 test('public email configuration exposes only availability for both states', async () => {
   for (const enabled of [false, true]) {
@@ -25,13 +26,11 @@ test('public email configuration exposes only availability for both states', asy
 
 test('disabled mail creates no tokens or false promises and does not gate demo accounts', async () => {
   const db = await openTestDb();
-  const app = createApp(db, { mailer: createMailer({ NODE_ENV: 'production' }) });
-  app.set('trust proxy', 1);
-  const server = app.listen(0);
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  const base = `http://localhost:${(server.address() as AddressInfo).port}`;
+  const app = createApp(db, { mailer: createMailer({ NODE_ENV: 'production' }), ingress: syntheticIngressConfig() });
+  const proxy=await startSyntheticIngress(app);
+  const base=proxy.base;
   const send = (method: string, path: string, body?: unknown, cookie?: string, ip = '192.0.2.201') => fetch(base + path, {
-    method, headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip, ...(cookie ? { Cookie: cookie } : {}) },
+    method, headers: { 'Content-Type': 'application/json', 'X-StudyPilot-Test-Client': ip, ...(cookie ? { Cookie: cookie } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   try {
@@ -79,5 +78,5 @@ test('disabled mail creates no tokens or false promises and does not gate demo a
     assert.equal((await send('POST', '/api/auth/confirm-email-change', { token: confirmationToken })).status, 200);
     assert.equal((await db.get('SELECT email FROM users WHERE id = ?', [user.id]))?.email, 'confirmed@example.test');
     assert.equal((await db.all('SELECT id FROM auth_tokens')).length, 3);
-  } finally { await new Promise<void>((resolve) => server.close(() => resolve())); await db.close(); }
+  } finally { await proxy.close(); await db.close(); }
 });

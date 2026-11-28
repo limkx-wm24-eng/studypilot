@@ -24,7 +24,7 @@ test('Stage 2 auth: legacy, current and unknown failed-login medians stay within
       const samples: number[] = [];
       for (let i = 0; i < 3; i++) {
         const started = performance.now();
-        const result = await h.send('POST', '/api/auth/login', { email: mode === 'unknown' ? 'timing-missing@example.test' : a.email, password: 'incorrect-synthetic' }, undefined, { 'X-Forwarded-For': `192.0.2.${150 + index}` });
+        const result = await h.send('POST', '/api/auth/login', { email: mode === 'unknown' ? 'timing-missing@example.test' : a.email, password: 'incorrect-synthetic' }, undefined, { 'X-StudyPilot-Test-Client': `192.0.2.${150 + index}` });
         assert.equal(result.status, 401); assert.deepEqual(await result.json(), { error: 'Invalid email or password' });
         samples.push(performance.now() - started);
       }
@@ -128,12 +128,12 @@ test('Stage 2 auth: aggregate failures across emails throttle only their own IP 
   try {
     const a = await h.register();
     for (let i = 0; i < 30; i++) {
-      const response = await h.send('POST', '/api/auth/login', { email: `aggregate-${i}@example.test`, password: 'incorrect-synthetic' }, undefined, { 'X-Forwarded-For': '192.0.2.80' });
+      const response = await h.send('POST', '/api/auth/login', { email: `aggregate-${i}@example.test`, password: 'incorrect-synthetic' }, undefined, { 'X-StudyPilot-Test-Client': '192.0.2.80' });
       assert.equal(response.status, i === 29 ? 429 : 401);
       if (i === 29) assert.ok(Number(response.headers.get('Retry-After')) > 0);
     }
-    assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-Forwarded-For': '192.0.2.81' })).status, 200);
-    assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-Forwarded-For': '192.0.2.80' })).status, 429);
+    assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-StudyPilot-Test-Client': '192.0.2.81' })).status, 200);
+    assert.equal((await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-StudyPilot-Test-Client': '192.0.2.80' })).status, 429);
     assert.equal(service.verifications, 31);
   } finally { await h.close(); }
 });

@@ -33,7 +33,7 @@ export default defineConfig({
   webServer: {
     command: 'node dist/server.js',
     url: `http://127.0.0.1:${port}/api/health`,
-    env: { PORT: String(port), DB_PATH: databasePath, DATABASE_URL: '', NODE_ENV: 'test' },
+    env: { PORT: String(port), DB_PATH: databasePath, DATABASE_URL: '', NODE_ENV: 'test', INGRESS_MODE: 'direct', TRUSTED_PROXY_CIDRS: '' },
     reuseExistingServer: false,
     timeout: 30_000,
   },

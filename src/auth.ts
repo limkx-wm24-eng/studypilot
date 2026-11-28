@@ -6,6 +6,7 @@ import { createMailer, emailEnabled, EMAIL_UNAVAILABLE, type Mailer } from './ma
 import { calendarDate, singleLineText } from './validation.js';
 import { passwords, needsPasswordUpgrade, type PasswordService } from './passwords.js';
 import { LoginLimits } from './loginLimits.js';
+import { clientIdentity } from './ingress.js';
 export { hashPassword, checkPassword } from './passwords.js';
 
 const COOKIE = 'sp_session';
@@ -86,7 +87,7 @@ const getAttemptEmail = (body: unknown): string | undefined => {
   const email = body.email.trim().toLowerCase();
   return email && email.length <= 120 ? email : undefined;
 };
-const getClientIp = (req: Request) => req.ip || req.socket.remoteAddress || 'unknown';
+const getClientIp = clientIdentity;
 const isUniqueConstraintViolation = (error: unknown) => {
   if (!error || typeof error !== 'object' || !('code' in error)) return false;
   return error.code === '23505' || error.code === 'ERR_SQLITE_CONSTRAINT_UNIQUE' || error.code === 'SQLITE_CONSTRAINT_UNIQUE'

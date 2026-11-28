@@ -38,7 +38,7 @@ const build=(role,commit)=>{
 const settings=dialect=>{
   const url=new URL('postgresql://localhost');url.hostname=pg;url.username='studypilot';url.pathname=activeScenario==='historical'?'/studypilot_recovery_test':'/studypilot_writer_recovery_test';
   return {env:{...process.env,DATABASE_URL:dialect==='postgres'?url.toString():''},args:[
-    '--network',dialect==='postgres'?network:'none','--env','DATABASE_URL','--env','NODE_ENV=production','--env','MAIL_API_KEY=','--env','MAIL_PROVIDER=brevo','--env','DB_PATH=/data/studypilot.db','--env','STUDYPILOT_ROLLBACK_FIXTURE=1',
+    '--network',dialect==='postgres'?network:'none','--env','DATABASE_URL','--env','NODE_ENV=production','--env','INGRESS_MODE=direct','--env','TRUSTED_PROXY_CIDRS=','--env','MAIL_API_KEY=','--env','MAIL_PROVIDER=brevo','--env','DB_PATH=/data/studypilot.db','--env','STUDYPILOT_ROLLBACK_FIXTURE=1',
     '--mount',`type=bind,source=${support},target=/review,readonly`,
     ...(dialect==='sqlite'?['--mount',`type=volume,source=${activeScenario==='historical'?volume:writerVolume},target=/data`]:[]),
   ]};

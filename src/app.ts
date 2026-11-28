@@ -13,6 +13,7 @@ import { calendarDate, resourceId, singleLineText } from './validation.js';
 import { UserUnavailable, withUserTransaction } from './userTransaction.js';
 import { checkRequestOrigin } from './requestOrigin.js';
 import { PasswordQueueFull, AUTH_BUSY_MESSAGE, type PasswordService } from './passwords.js';
+import { ingressBoundary, loadIngressConfig, type IngressConfig } from './ingress.js';
 
 const TYPES = ['Assignment', 'Homework', 'Exam', 'Project', 'Others'] as const;
 const PRIORITIES = ['Low', 'Medium', 'High', 'Urgent'] as const;
@@ -38,10 +39,11 @@ const toCourse = (r: DbRow) => ({ id: r.id, semesterLabel: r.semester_label, cou
 const toClass = (r: DbRow) => ({ id: r.id, name: r.name, color: r.color });
 const invalid = (res: Response, issues: unknown) => void res.status(400).json({ error: 'Invalid input', errors: issues });
 
-export function createApp(db: Database, options: { mailer?: Mailer; passwords?: PasswordService } = {}) {
+export function createApp(db: Database, options: { mailer?: Mailer; passwords?: PasswordService; ingress?: IngressConfig } = {}) {
   const app = express();
+  const ingress = options.ingress ?? loadIngressConfig();
   const mailer = options.mailer ?? createMailer();
-  if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
+  app.set('trust proxy', false); // Forwarded Host/protocol never gain implicit trust.
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
@@ -62,6 +64,7 @@ export function createApp(db: Database, options: { mailer?: Mailer; passwords?: 
     },
   }));
   app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  app.use(ingressBoundary(ingress));
   app.use('/api', checkRequestOrigin);
   app.use(express.json());
   app.param('id', (_req, res, next, value) => {

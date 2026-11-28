@@ -43,7 +43,7 @@ try {
       const before=failure?{hash:String((await h.db.get('SELECT password_hash FROM users WHERE id=?',[a.user.id]))!.password_hash),sessions:Number((await h.db.get('SELECT COUNT(*) AS count FROM sessions'))!.count)}:undefined;
       const started = performance.now();
       const registration=mode==='registration';
-      const headers={ 'X-Forwarded-For': `198.18.${modes.findIndex(m=>m[0]===mode)}.${i+1}` };
+      const headers={ 'X-StudyPilot-Test-Client': `198.18.${modes.findIndex(m=>m[0]===mode)}.${i+1}` };
       const result = registration?await h.register():resetting?await h.send('POST','/api/auth/reset',{token,newPassword:'synthetic-password-123'},undefined,headers):await h.send('POST', '/api/auth/login', { email: mode === 'unknown-failure' ? 'missing-benchmark@example.test' : a.email, password: failure ? 'incorrect-synthetic' : 'synthetic-password-123' }, undefined,headers);
       assert.equal('status' in result?result.status:result.response.status,registration?201:failure?401:200,'Synthetic authentication benchmark status');
       const body='status' in result?await result.json():undefined;
@@ -57,10 +57,10 @@ try {
   const started=performance.now(),health:number[]=[];
   let probing=true;
   const probe=(async()=>{while(probing){const start=performance.now();assert.equal((await h.send('GET','/api/health')).status,200);health.push(performance.now()-start);await new Promise(done=>setTimeout(done,20));}})();
-  const results=await Promise.all(Array.from({length:24},(_,i)=>h.send('POST','/api/auth/login',{email:a.email,password:'synthetic-password-123'},undefined,{'X-Forwarded-For':`198.19.0.${i+1}`})));
+  const results=await Promise.all(Array.from({length:24},(_,i)=>h.send('POST','/api/auth/login',{email:a.email,password:'synthetic-password-123'},undefined,{'X-StudyPilot-Test-Client':`198.19.0.${i+1}`})));
   probing=false;await probe;
   for(const response of results){assert.ok([200,503].includes(response.status));if(response.status===503){assert.deepEqual(await response.json(),{error:AUTH_BUSY_MESSAGE});assert.equal(response.headers.get('Retry-After'),'1');}}
-  assert.equal((await h.send('POST','/api/auth/login',{email:a.email,password:'synthetic-password-123'},undefined,{'X-Forwarded-For':'198.19.1.1'})).status,200);
+  assert.equal((await h.send('POST','/api/auth/login',{email:a.email,password:'synthetic-password-123'},undefined,{'X-StudyPilot-Test-Client':'198.19.1.1'})).status,200);
   assert.deepEqual(queue.status,{active:0,waiting:0});
   console.log(JSON.stringify({mode:'concurrent-strong-logins',requests:24,status200:results.filter(r=>r.status===200).length,status503:results.filter(r=>r.status===503).length,elapsedMs:performance.now()-started,peakActive,peakWaiting,recovered:true,health:summarize(health)}));
   console.log(JSON.stringify({initialRssMiB:initialRss/2**20,peakObservedRssMiB:peakRss/2**20,resourceMaxRssMiB:process.resourceUsage().maxRSS/1024,eventLoopP95Ms:loop.percentile(95)/1e6,eventLoopMaxMs:loop.max/1e6}));

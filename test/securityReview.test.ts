@@ -180,7 +180,7 @@ test('QA recovery privacy: known and missing emails have identical forgot/resend
         const responses: { status: number; body: unknown }[][] = [[], []];
         for (let i = 0; i < 3; i++) for (let j = 0; j < 2; j++) {
           const started = performance.now();
-          const result = await h.send('POST', `/api/auth/${endpoint}`, { email: bodies[j] }, undefined, { 'X-Forwarded-For': `192.0.2.${170 + j}` });
+          const result = await h.send('POST', `/api/auth/${endpoint}`, { email: bodies[j] }, undefined, { 'X-StudyPilot-Test-Client': `192.0.2.${170 + j}` });
           samples[j].push(performance.now() - started);
           responses[j].push({ status: result.status, body: await result.json() });
         }
@@ -214,10 +214,10 @@ test('QA login privacy: failures do equivalent password work for missing and exi
     const known: number[] = [], unknown: number[] = [];
     for (let i = 0; i < 3; i++) {
       let started = performance.now();
-      const first = await h.send('POST', '/api/auth/login', { email: a.email, password: 'incorrect-synthetic' }, undefined, { 'X-Forwarded-For': `192.0.2.${100 + i}` });
+      const first = await h.send('POST', '/api/auth/login', { email: a.email, password: 'incorrect-synthetic' }, undefined, { 'X-StudyPilot-Test-Client': `192.0.2.${100 + i}` });
       known.push(performance.now() - started);
       started = performance.now();
-      const second = await h.send('POST', '/api/auth/login', { email: 'missing-synthetic@example.test', password: 'incorrect-synthetic' }, undefined, { 'X-Forwarded-For': `192.0.2.${110 + i}` });
+      const second = await h.send('POST', '/api/auth/login', { email: 'missing-synthetic@example.test', password: 'incorrect-synthetic' }, undefined, { 'X-StudyPilot-Test-Client': `192.0.2.${110 + i}` });
       unknown.push(performance.now() - started);
       assert.equal(first.status, second.status); assert.deepEqual(await first.json(), await second.json());
     }
@@ -232,16 +232,16 @@ test('QA account lockout: another IP cannot deny a legitimate password after fiv
   const h = await securityHarness(true);
   try {
     const a = await h.register();
-    for (let i = 0; i < 5; i++) await h.send('POST', '/api/auth/login', { email: a.email, password: 'incorrect-synthetic' }, undefined, { 'X-Forwarded-For': '192.0.2.150' });
-    const valid = await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-Forwarded-For': '192.0.2.151' });
+    for (let i = 0; i < 5; i++) await h.send('POST', '/api/auth/login', { email: a.email, password: 'incorrect-synthetic' }, undefined, { 'X-StudyPilot-Test-Client': '192.0.2.150' });
+    const valid = await h.send('POST', '/api/auth/login', { email: a.email, password: 'synthetic-password-123' }, undefined, { 'X-StudyPilot-Test-Client': '192.0.2.151' });
     assert.equal(valid.status, 200);
   } finally { await h.close(); }
 });
 
-test('QA known proxy assumption: a directly connected client cannot reset IP limits by spoofing XFF', { todo: 'trust proxy=1 accepts XFF from any immediate peer; actual Render proxy sanitization is unverified.' }, async () => {
-  const h = await securityHarness(true);
+test('QA direct ingress: a directly connected client cannot reset IP limits by spoofing XFF', async () => {
+  const h = await securityHarness(true,true,undefined,'direct');
   try {
-    assert.equal(h.app.get('trust proxy'), 1);
+    assert.equal(h.app.get('trust proxy'), false);
     for (let i = 0; i < 10; i++) await h.send('POST', '/api/auth/reset', {}, undefined, { 'X-Forwarded-For': '192.0.2.160' });
     assert.equal((await h.send('POST', '/api/auth/reset', {}, undefined, { 'X-Forwarded-For': '192.0.2.160' })).status, 429);
     assert.equal((await h.send('POST', '/api/auth/reset', {}, undefined, { 'X-Forwarded-For': '192.0.2.161' })).status, 429);

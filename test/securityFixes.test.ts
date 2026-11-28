@@ -22,7 +22,7 @@ test('Stage 1 controls: all single-line labels reject C0/C1 controls before data
         ['POST', '/api/auth/register', { email: `control-${i}@example.test`, password: 'synthetic-password-123', name: text }],
       ];
       for (const [method, path, body] of requests) {
-        const result = await h.send(method, path, body, a.cookie, { 'X-Forwarded-For': `192.0.2.${10 + i}` });
+        const result = await h.send(method, path, body, a.cookie, { 'X-StudyPilot-Test-Client': `192.0.2.${10 + i}` });
         assert.equal(result.status, 400, `${method} ${path}: control U+${code.toString(16)}`);
         assert.equal(result.headers.get('Cache-Control'), 'no-store');
         const error = await result.json();

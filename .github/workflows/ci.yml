@@ -19,6 +19,7 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/check-blueprint.mjs --build
+      - run: node scripts/test-ingress-docker.mjs
   test:
     runs-on: ubuntu-latest
     steps:
